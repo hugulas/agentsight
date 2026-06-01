@@ -238,6 +238,153 @@ fn run_adapters_list(json: bool) -> Result<(), Box<dyn std::error::Error + Send 
     Ok(())
 }
 
+pub(crate) fn run_db_summary(
+    db: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let store = SqliteStore::open(db)?;
+
+    let snap = store.export_snapshot(SnapshotOptions {
+        event_limit: 50_000,
+        audit_limit: 50_000,
+    })?;
+    let s = &snap.summary;
+
+    // Duration
+    let duration_s = match (s.start_timestamp_ms, s.end_timestamp_ms) {
+        (Some(start), Some(end)) if end > start => (end - start) as f64 / 1000.0,
+        _ => 0.0,
+    };
+
+    // Token totals
+    let total_calls: i64 = snap.token_summary.iter().map(|r| r.calls).sum();
+
+    // Header
+    if duration_s > 0.0 {
+        println!(
+            "{:.0}s session · {} API calls · {} tokens",
+            duration_s, total_calls, s.total_tokens
+        );
+    } else {
+        println!(
+            "{} API calls · {} tokens",
+            total_calls, s.total_tokens
+        );
+    }
+    println!();
+
+    // Models
+    for row in &snap.token_summary {
+        println!(
+            "  {} — {} calls, {} tokens (in: {}, out: {})",
+            row.group, row.calls, row.total_tokens, row.input_tokens, row.output_tokens
+        );
+    }
+    println!();
+
+    // Process analysis from audit events
+    let mut exec_count = 0usize;
+    let mut programs: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut git_subcommands: Vec<String> = Vec::new();
+    let mut test_runs = 0usize;
+    let mut git_commits = 0usize;
+
+    for row in &snap.audit_events {
+        if row.action.as_deref() != Some("exec") {
+            continue;
+        }
+        exec_count += 1;
+        let comm = row.comm.as_deref().unwrap_or("?");
+        *programs.entry(comm.to_string()).or_default() += 1;
+
+        // Detect specific activities from full_command or target
+        let target = row.target.as_deref().unwrap_or("");
+        let details = row.details.to_string();
+
+        if comm == "git" {
+            // Try to extract git subcommand from details or summary
+            let summary = row.summary.as_deref().unwrap_or("");
+            if summary.contains("commit") || details.contains("commit") {
+                git_commits += 1;
+            }
+            // Store for display
+            if let Some(sub) = summary.split("git ").nth(1) {
+                let sub = sub.split_whitespace().next().unwrap_or("");
+                if !sub.is_empty() {
+                    git_subcommands.push(sub.to_string());
+                }
+            }
+        }
+
+        if matches!(comm, "pytest" | "cargo" | "npm" | "jest" | "make")
+            && (target.contains("test") || details.contains("test"))
+        {
+            test_runs += 1;
+        }
+    }
+
+    // Files accessed (from file audit events)
+    let mut files_accessed: Vec<String> = Vec::new();
+    for row in &snap.audit_events {
+        if row.audit_type == "file" && row.target.as_ref().is_some_and(|t| !files_accessed.contains(t)) {
+            files_accessed.push(row.target.clone().unwrap());
+        }
+    }
+
+    // Network endpoints (from HTTP events in canonical events)
+    let mut endpoints: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for event in &snap.events {
+        if let Some(host) = &event.host {
+            endpoints.insert(host.clone());
+        }
+    }
+
+    // Print process summary
+    if exec_count > 0 {
+        let mut sorted: Vec<_> = programs.iter().collect();
+        sorted.sort_by(|a, b| b.1.cmp(a.1));
+        let top: Vec<String> = sorted
+            .iter()
+            .take(8)
+            .map(|(name, count)| format!("{}({})", name, count))
+            .collect();
+        println!("{} processes spawned: {}", exec_count, top.join(", "));
+
+        if git_commits > 0 {
+            println!("{} git commits", git_commits);
+        }
+        if test_runs > 0 {
+            println!("{} test runs", test_runs);
+        }
+    }
+
+    if !files_accessed.is_empty() {
+        let display: Vec<&str> = files_accessed.iter().take(5).map(|s| s.as_str()).collect();
+        if files_accessed.len() > 5 {
+            println!(
+                "{} files accessed: {}, ... (+{} more)",
+                files_accessed.len(),
+                display.join(", "),
+                files_accessed.len() - 5
+            );
+        } else {
+            println!(
+                "{} files accessed: {}",
+                files_accessed.len(),
+                display.join(", ")
+            );
+        }
+    }
+
+    if !endpoints.is_empty() {
+        let eps: Vec<&str> = endpoints.iter().map(|s| s.as_str()).collect();
+        println!("Network: {}", eps.join(", "));
+    }
+
+    println!();
+    println!("  agentsight db audit --db {} for full details", db);
+    Ok(())
+}
+
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();

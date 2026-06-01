@@ -29,8 +29,8 @@ No sudo needed. When the session ends you get:
 Not just token counts — **what the agent actually did to your system**. This is what Langfuse and LangSmith can't see.
 
 ```bash
-agentsight db token              # token usage (auto-finds latest session)
-agentsight db audit --json       # every process spawn, file open, API call
+agentsight db summary            # what happened, tokens, processes, network
+agentsight db audit --json       # full event log
 agentsight db list               # all recorded sessions
 ```
 

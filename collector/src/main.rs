@@ -28,7 +28,7 @@ use binary_resolver::{
 
 use cli_db::{
     AdapterCommand, configured_db_path, run_adapters_command, run_audit_query,
-    run_capture_adapters, run_export, run_replay, run_token_query,
+    run_capture_adapters, run_db_summary, run_export, run_replay, run_token_query,
 };
 use cli_discover::run_discover;
 use framework::{
@@ -229,6 +229,12 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum DbCommands {
+    /// Session summary: what the agent did, tokens, processes, files
+    Summary {
+        /// SQLite database path (defaults to latest session)
+        #[arg(long)]
+        db: Option<String>,
+    },
     /// Query token usage from a SQLite database
     Token {
         /// SQLite database path (defaults to latest session)
@@ -573,6 +579,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match &cli.command {
         Commands::Db(cmd) => {
             match cmd {
+                DbCommands::Summary { db } => {
+                    let db = resolve_db_or_latest(db)?;
+                    run_db_summary(&db)?;
+                }
                 DbCommands::Import {
                     input,
                     db,
