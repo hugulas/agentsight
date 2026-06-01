@@ -15,12 +15,13 @@ AgentSight is a observability tool designed specifically for monitoring LLM agen
 # Install
 wget https://github.com/eunomia-bpf/agentsight/releases/latest/download/agentsight && chmod +x agentsight
 # Launch your agent with monitoring — works with any command
+# May Need sudo for eBPF inside
 ./agentsight exec -- claude
 # Or attach to an already-running agent by process name
-./agentsight record -c claude
+sudo ./agentsight record -c claude
 ```
 
-Open [http://127.0.0.1:7395](http://127.0.0.1:7395) to watch live. No sudo, no config.
+Open [http://127.0.0.1:7395](http://127.0.0.1:7395) to watch live.
 
 <div align="center">
   <img src="https://github.com/eunomia-bpf/agentsight/raw/master/docs/demo-tree.png" alt="AgentSight Demo - Process Tree Visualization" width="800">
