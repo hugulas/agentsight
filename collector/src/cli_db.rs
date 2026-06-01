@@ -242,8 +242,8 @@ pub(crate) fn run_db_summary(
     db: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // If no DB, try reading local Claude/Codex sessions directly
-    if db.is_none() && let Some(summary) = read_latest_local_session() {
-        print_local_summary(&summary);
+    if db.is_none() && let Some((source, file, data)) = read_latest_local_session() {
+        print_local_summary(&source, &file, &data);
         return Ok(());
     }
     let db = db.ok_or("No session data found. Run `agentsight exec` first, or pass --db.")?;
@@ -407,234 +407,150 @@ fn truncate(s: &str, max: usize) -> String {
 // Local agent session reader (reads ~/.claude and ~/.codex JSONL directly)
 // ---------------------------------------------------------------------------
 
-pub(crate) struct LocalSummary {
-    pub source: String, // "claude" or "codex"
-    pub session_file: String,
-    pub duration_ms: Option<u64>,
-    pub num_turns: Option<u64>,
-    pub total_cost_usd: Option<f64>,
-    pub models: std::collections::BTreeMap<String, ModelUsage>,
-    pub tool_calls: std::collections::BTreeMap<String, usize>,
-}
-
-pub(crate) struct ModelUsage {
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub total_tokens: u64,
-}
+use std::collections::BTreeMap;
 
 fn local_session_dirs() -> Vec<(&'static str, std::path::PathBuf)> {
     let home = dirs::home_dir().unwrap_or_default();
-    let mut dirs = Vec::new();
-    let claude = home.join(".claude").join("projects");
-    if claude.is_dir() {
-        dirs.push(("claude", claude));
+    [("claude", home.join(".claude/projects")), ("codex", home.join(".codex/sessions"))]
+        .into_iter()
+        .filter(|(_, d)| d.is_dir())
+        .collect()
+}
+
+fn walk_jsonl(dir: &std::path::Path, f: &mut dyn FnMut(&std::path::Path, &std::fs::Metadata)) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            walk_jsonl(&path, f);
+        } else if path.extension().is_some_and(|e| e == "jsonl")
+            && let Ok(meta) = path.metadata() {
+            f(&path, &meta);
+        }
     }
-    let codex = home.join(".codex").join("sessions");
-    if codex.is_dir() {
-        dirs.push(("codex", codex));
-    }
-    dirs
 }
 
 pub(crate) fn count_local_sessions() -> Vec<(&'static str, std::path::PathBuf, usize, u64)> {
-    fn count_jsonl(dir: &std::path::Path, count: &mut usize, bytes: &mut u64) {
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                count_jsonl(&path, count, bytes);
-            } else if path.extension().is_some_and(|e| e == "jsonl") {
-                *count += 1;
-                *bytes += path.metadata().map(|m| m.len()).unwrap_or(0);
-            }
-        }
-    }
-    let mut results = Vec::new();
-    for (name, dir) in local_session_dirs() {
+    local_session_dirs().into_iter().filter_map(|(name, dir)| {
         let (mut count, mut bytes) = (0usize, 0u64);
-        count_jsonl(&dir, &mut count, &mut bytes);
-        if count > 0 {
-            results.push((name, dir, count, bytes));
-        }
-    }
-    results
+        walk_jsonl(&dir, &mut |_, meta| { count += 1; bytes += meta.len(); });
+        (count > 0).then_some((name, dir, count, bytes))
+    }).collect()
 }
 
-fn latest_jsonl_in(dir: &std::path::Path) -> Option<std::path::PathBuf> {
-    let mut best: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
-    fn walk(dir: &std::path::Path, best: &mut Option<(std::time::SystemTime, std::path::PathBuf)>) {
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                walk(&path, best);
-            } else if path.extension().is_some_and(|e| e == "jsonl")
-                && let Ok(meta) = path.metadata()
-            {
-                let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
-                if best.as_ref().is_none_or(|(t, _)| mtime > *t) {
-                    *best = Some((mtime, path));
-                }
-            }
-        }
-    }
-    walk(dir, &mut best);
-    best.map(|(_, p)| p)
-}
-
-fn read_latest_local_session() -> Option<LocalSummary> {
+fn read_latest_local_session() -> Option<(String, String, serde_json::Value)> {
     for (name, dir) in local_session_dirs() {
-        let path = latest_jsonl_in(&dir)?;
+        let mut best: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
+        walk_jsonl(&dir, &mut |path, meta| {
+            let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+            if best.as_ref().is_none_or(|(t, _)| mtime > *t) {
+                best = Some((mtime, path.to_path_buf()));
+            }
+        });
+        let path = best?.1;
         let content = std::fs::read_to_string(&path).ok()?;
-        let summary = match name {
-            "claude" => parse_claude_session(&path, &content),
-            "codex" => parse_codex_session(&path, &content),
-            _ => None,
-        };
-        if summary.is_some() {
-            return summary;
+        let parsed = parse_local_session(name, &content);
+        if !parsed.is_null() {
+            return Some((name.into(), path.display().to_string(), parsed));
         }
     }
     None
 }
 
-#[allow(clippy::collapsible_if)]
-fn parse_claude_session(path: &std::path::Path, content: &str) -> Option<LocalSummary> {
-    let mut summary = LocalSummary {
-        source: "claude".into(),
-        session_file: path.display().to_string(),
-        duration_ms: None,
-        num_turns: None,
-        total_cost_usd: None,
-        models: std::collections::BTreeMap::new(),
-        tool_calls: std::collections::BTreeMap::new(),
-    };
+fn json_u64(v: &serde_json::Value, key: &str) -> u64 {
+    v.get(key).and_then(|v| v.as_u64()).unwrap_or(0)
+}
+
+fn parse_local_session(source: &str, content: &str) -> serde_json::Value {
+    let mut models: BTreeMap<String, (u64, u64, u64)> = BTreeMap::new();
+    let mut tools: BTreeMap<String, usize> = BTreeMap::new();
+    let mut duration_ms = 0u64;
+    let mut num_turns = 0u64;
+    let mut cost_usd = 0.0f64;
+    let mut codex_model = String::new();
 
     for line in content.lines() {
         let Ok(obj) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        let typ = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
-        // "result" messages have the full session summary
-        if obj.get("type").and_then(|v| v.as_str()) == Some("result") {
-            summary.duration_ms = obj.get("duration_ms").and_then(|v| v.as_u64());
-            summary.num_turns = obj.get("num_turns").and_then(|v| v.as_u64());
-            summary.total_cost_usd = obj.get("total_cost_usd").and_then(|v| v.as_f64());
-
-            if let Some(model_usage) = obj.get("modelUsage").and_then(|v| v.as_object()) {
-                for (model, usage) in model_usage {
-                    summary.models.insert(model.clone(), ModelUsage {
-                        input_tokens: usage.get("inputTokens").and_then(|v| v.as_u64()).unwrap_or(0),
-                        output_tokens: usage.get("outputTokens").and_then(|v| v.as_u64()).unwrap_or(0),
-                        total_tokens: usage.get("inputTokens").and_then(|v| v.as_u64()).unwrap_or(0)
-                            + usage.get("outputTokens").and_then(|v| v.as_u64()).unwrap_or(0)
-                            + usage.get("cacheReadInputTokens").and_then(|v| v.as_u64()).unwrap_or(0)
-                            + usage.get("cacheCreationInputTokens").and_then(|v| v.as_u64()).unwrap_or(0),
-                    });
-                }
-            }
-        }
-
-        // Count tool_use from assistant messages
-        if obj.get("type").and_then(|v| v.as_str()) == Some("assistant") {
-            if let Some(content) = obj.pointer("/message/content").and_then(|v| v.as_array()) {
-                for item in content {
-                    if item.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
-                        let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                        *summary.tool_calls.entry(name.to_string()).or_default() += 1;
+        match (source, typ) {
+            ("claude", "result") => {
+                duration_ms = json_u64(&obj, "duration_ms");
+                num_turns = json_u64(&obj, "num_turns");
+                cost_usd = obj.get("total_cost_usd").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                if let Some(mu) = obj.get("modelUsage").and_then(|v| v.as_object()) {
+                    for (m, u) in mu {
+                        let inp = json_u64(u, "inputTokens");
+                        let out = json_u64(u, "outputTokens");
+                        let total = inp + out + json_u64(u, "cacheReadInputTokens") + json_u64(u, "cacheCreationInputTokens");
+                        models.insert(m.clone(), (inp, out, total));
                     }
                 }
             }
-        }
-    }
-
-    if summary.models.is_empty() { return None; }
-    Some(summary)
-}
-
-#[allow(clippy::collapsible_if)]
-fn parse_codex_session(path: &std::path::Path, content: &str) -> Option<LocalSummary> {
-    let mut summary = LocalSummary {
-        source: "codex".into(),
-        session_file: path.display().to_string(),
-        duration_ms: None,
-        num_turns: None,
-        total_cost_usd: None,
-        models: std::collections::BTreeMap::new(),
-        tool_calls: std::collections::BTreeMap::new(),
-    };
-
-    let mut model = String::new();
-
-    for line in content.lines() {
-        let Ok(obj) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-        let msg_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
-
-        if msg_type == "turn_context" {
-            if let Some(m) = obj.pointer("/payload/model").and_then(|v| v.as_str()) {
-                model = m.to_string();
-            }
-        }
-
-        if msg_type == "event_msg" {
-            if let Some(payload) = obj.get("payload") {
-                if payload.get("type").and_then(|v| v.as_str()) == Some("token_count") {
-                    if let Some(usage) = payload.pointer("/info/total_token_usage") {
-                        let input = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                        let output = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                        let total = usage.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                        let key = if model.is_empty() { "unknown".to_string() } else { model.clone() };
-                        summary.models.insert(key, ModelUsage { input_tokens: input, output_tokens: output, total_tokens: total });
+            ("claude", "assistant") => {
+                if let Some(items) = obj.pointer("/message/content").and_then(|v| v.as_array()) {
+                    for item in items {
+                        if item.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
+                            let n = item.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                            *tools.entry(n.into()).or_default() += 1;
+                        }
                     }
                 }
             }
-        }
-
-        // Count function_call tool uses
-        if msg_type == "response_item" {
-            if let Some(payload) = obj.get("payload") {
-                if payload.get("type").and_then(|v| v.as_str()) == Some("function_call") {
-                    let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                    *summary.tool_calls.entry(name.to_string()).or_default() += 1;
+            ("codex", "turn_context") => {
+                if let Some(m) = obj.pointer("/payload/model").and_then(|v| v.as_str()) {
+                    codex_model = m.into();
                 }
             }
+            ("codex", "event_msg") => {
+                if obj.pointer("/payload/type").and_then(|v| v.as_str()) == Some("token_count")
+                    && let Some(u) = obj.pointer("/payload/info/total_token_usage")
+                {
+                    let key = if codex_model.is_empty() { "unknown" } else { &codex_model };
+                    models.insert(key.into(), (json_u64(u, "input_tokens"), json_u64(u, "output_tokens"), json_u64(u, "total_tokens")));
+                }
+            }
+            ("codex", "response_item") => {
+                if obj.pointer("/payload/type").and_then(|v| v.as_str()) == Some("function_call") {
+                    let n = obj.pointer("/payload/name").and_then(|v| v.as_str()).unwrap_or("?");
+                    *tools.entry(n.into()).or_default() += 1;
+                }
+            }
+            _ => {}
         }
     }
 
-    if summary.models.is_empty() { return None; }
-    Some(summary)
+    if models.is_empty() { return serde_json::Value::Null; }
+    serde_json::json!({ "models": models, "tools": tools, "duration_ms": duration_ms, "num_turns": num_turns, "cost_usd": cost_usd })
 }
 
-fn print_local_summary(s: &LocalSummary) {
-    // Header
-    let total_tokens: u64 = s.models.values().map(|m| m.total_tokens).sum();
-    let total_calls: usize = s.tool_calls.values().sum();
+fn print_local_summary(source: &str, file: &str, data: &serde_json::Value) {
+    let models = data.get("models").and_then(|v| v.as_object()).unwrap();
+    let total_tokens: u64 = models.values().map(|v| v.get(2).and_then(|v| v.as_u64()).unwrap_or(0)).sum();
 
-    print!("Latest {} session", s.source);
-    if let Some(ms) = s.duration_ms {
-        print!(" · {:.0}s", ms as f64 / 1000.0);
-    }
-    if let Some(turns) = s.num_turns {
-        print!(" · {} turns", turns);
-    }
-    if let Some(cost) = s.total_cost_usd {
-        print!(" · ${:.2}", cost);
-    }
+    print!("Latest {} session", source);
+    let ms = json_u64(data, "duration_ms");
+    if ms > 0 { print!(" · {:.0}s", ms as f64 / 1000.0); }
+    let turns = json_u64(data, "num_turns");
+    if turns > 0 { print!(" · {} turns", turns); }
+    let cost = data.get("cost_usd").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    if cost > 0.0 { print!(" · ${:.2}", cost); }
     println!(" · {} tokens", total_tokens);
     println!();
 
-    for (model, usage) in &s.models {
-        println!(
-            "  {} — {} tokens (in: {}, out: {})",
-            model, usage.total_tokens, usage.input_tokens, usage.output_tokens
-        );
+    for (model, usage) in models {
+        let (inp, out, total) = (json_u64(usage, "0"), json_u64(usage, "1"), json_u64(usage, "2"));
+        println!("  {} — {} tokens (in: {}, out: {})", model, total, inp, out);
     }
 
-    if !s.tool_calls.is_empty() {
-        let mut sorted: Vec<_> = s.tool_calls.iter().collect();
-        sorted.sort_by(|a, b| b.1.cmp(a.1));
+    if let Some(tools) = data.get("tools").and_then(|v| v.as_object())
+        && !tools.is_empty()
+    {
+        let total_calls: u64 = tools.values().map(|v| v.as_u64().unwrap_or(0)).sum();
+        let mut sorted: Vec<_> = tools.iter().collect();
+        sorted.sort_by(|a, b| b.1.as_u64().cmp(&a.1.as_u64()));
         let top: Vec<String> = sorted.iter().take(8).map(|(n, c)| format!("{}({})", n, c)).collect();
         println!("\n{} tool calls: {}", total_calls, top.join(", "));
     }
-
-    println!("\n  Source: {}", s.session_file);
+    println!("\n  Source: {}", file);
 }
