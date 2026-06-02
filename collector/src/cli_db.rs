@@ -244,6 +244,7 @@ pub(crate) struct SessionSummary {
     pub duration_s: f64,
     pub models: Vec<(String, i64, i64, i64, i64)>, // (name, input, output, total, calls)
     pub processes: BTreeMap<String, usize>,
+    pub process_exits: BTreeMap<String, usize>,
     pub tool_calls: BTreeMap<String, usize>,
     pub files: Vec<String>,
     pub endpoints: Vec<String>,
@@ -283,6 +284,13 @@ impl SessionSummary {
                     .or_default() += 1;
             }
         }
+        let mut process_exits = BTreeMap::new();
+        for row in &snap.audit_events {
+            if row.action.as_deref() == Some("exit") {
+                let status = row.status.as_deref().unwrap_or("observed").to_string();
+                *process_exits.entry(status).or_default() += 1;
+            }
+        }
         let mut files = Vec::new();
         for row in &snap.audit_events {
             if row.audit_type == "file" && row.target.as_ref().is_some_and(|t| !files.contains(t)) {
@@ -317,6 +325,7 @@ impl SessionSummary {
             duration_s,
             models,
             processes,
+            process_exits,
             tool_calls,
             files,
             endpoints,
@@ -357,6 +366,7 @@ impl SessionSummary {
             duration_s,
             models,
             processes: BTreeMap::new(),
+            process_exits: BTreeMap::new(),
             tool_calls,
             files: vec![],
             endpoints: vec![],
@@ -368,6 +378,10 @@ impl SessionSummary {
         // Header
         let total_tokens: i64 = self.models.iter().map(|m| m.3).sum();
         let total_calls: i64 = self.models.iter().map(|m| m.4).sum();
+        let has_tokens = self
+            .models
+            .iter()
+            .any(|(_, input, output, total, _)| *input > 0 || *output > 0 || *total > 0);
         print!("{} session", self.source);
         if self.duration_s > 0.0 {
             print!(" · {:.0}s", self.duration_s);
@@ -375,10 +389,16 @@ impl SessionSummary {
         if total_calls > 0 {
             print!(" · {} API calls", total_calls);
         }
-        println!(" · {} tokens", total_tokens);
+        if has_tokens {
+            print!(" · {} tokens", total_tokens);
+        }
+        println!();
         println!();
 
         for (name, inp, out, total, calls) in &self.models {
+            if *inp == 0 && *out == 0 && *total == 0 {
+                continue;
+            }
             if *calls > 0 {
                 println!(
                     "  {} — {} calls, {} tokens (in: {}, out: {})",
@@ -399,6 +419,23 @@ impl SessionSummary {
                 .map(|(n, c)| format!("{}({})", n, c))
                 .collect();
             println!("\n{} processes spawned: {}", exec_count, top.join(", "));
+        }
+
+        if !self.process_exits.is_empty() {
+            let exit_count: usize = self.process_exits.values().sum();
+            let ordered = ["failure", "success", "observed"];
+            let mut parts = Vec::new();
+            for status in ordered {
+                if let Some(count) = self.process_exits.get(status) {
+                    parts.push(format!("{}({})", status, count));
+                }
+            }
+            for (status, count) in &self.process_exits {
+                if !ordered.contains(&status.as_str()) {
+                    parts.push(format!("{}({})", status, count));
+                }
+            }
+            println!("{} process exits: {}", exit_count, parts.join(", "));
         }
 
         if !self.tool_calls.is_empty() {
@@ -432,9 +469,6 @@ impl SessionSummary {
             println!("Network: {}", self.endpoints.join(", "));
         }
 
-        if let Some(ref path) = self.db_path {
-            println!("\n  Source: {}", path);
-        }
     }
 }
 
@@ -553,16 +587,18 @@ pub(crate) fn count_local_sessions() -> Vec<(&'static str, std::path::PathBuf, u
 }
 
 fn read_latest_local_session() -> Option<(String, String, serde_json::Value)> {
+    let mut candidates = Vec::new();
     for (name, dir) in local_session_dirs() {
-        let mut best: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
         walk_jsonl(&dir, &mut |path, meta| {
             let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
-            if best.as_ref().is_none_or(|(t, _)| mtime > *t) {
-                best = Some((mtime, path.to_path_buf()));
-            }
+            candidates.push((mtime, name, path.to_path_buf()));
         });
-        let path = best?.1;
-        let content = std::fs::read_to_string(&path).ok()?;
+    }
+    candidates.sort_by_key(|(mtime, _, _)| std::cmp::Reverse(*mtime));
+    for (_, name, path) in candidates {
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
         let parsed = parse_local_session(name, &content);
         if !parsed.is_null() {
             return Some((name.into(), path.display().to_string(), parsed));
@@ -657,7 +693,7 @@ fn parse_local_session(source: &str, content: &str) -> serde_json::Value {
         }
     }
 
-    if models.is_empty() {
+    if models.is_empty() && tools.is_empty() && duration_ms == 0 && num_turns == 0 {
         return serde_json::Value::Null;
     }
     serde_json::json!({ "models": models, "tools": tools, "duration_ms": duration_ms, "num_turns": num_turns, "cost_usd": cost_usd })

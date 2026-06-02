@@ -286,7 +286,9 @@ fn build_summary(
             .get("filename")
             .and_then(|v| v.as_str())
             .map(|f| format!("exec {}", f)),
-        EventKind::ProcessExit => Some("process exit".to_string()),
+        EventKind::ProcessExit => {
+            process_exit_summary(data).or_else(|| Some("process exit".to_string()))
+        }
         EventKind::FsOpen | EventKind::FsWrite | EventKind::FsMutation => data
             .get("path")
             .or_else(|| data.get("filepath"))
@@ -298,6 +300,15 @@ fn build_summary(
             .map(|stream| format!("{} output", stream)),
         _ => None,
     }
+}
+
+fn process_exit_summary(data: &Value) -> Option<String> {
+    let exit_code = data.get("exit_code").and_then(|v| v.as_i64())?;
+    let mut summary = format!("exit code {}", exit_code);
+    if let Some(duration_ms) = data.get("duration_ms").and_then(|v| v.as_u64()) {
+        summary.push_str(&format!(" ({}ms)", duration_ms));
+    }
+    Some(summary)
 }
 
 fn extract_sse_model(data: &Value) -> Option<String> {

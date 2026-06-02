@@ -481,8 +481,8 @@ Expected result:
 - The command prints `agentsight-smoke`.
 - The capture exits with status 0.
 - AgentSight does not tee the child process stdout/stderr into SQLite.
-- Token evidence comes from TLS/SSE response usage, Claude telemetry, or an
-  explicit agent-native session log reader.
+- Token evidence comes from network request/response usage or telemetry that
+  AgentSight can parse, or from an explicit agent-native session log reader.
 - `agent_sessions` contains a `claude-code` row after adapters run.
 
 Automated gated test:

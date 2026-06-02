@@ -51,6 +51,7 @@ pub struct AuditRow {
     pub target: Option<String>,
     pub status: Option<String>,
     pub summary: Option<String>,
+    pub details: Value,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -449,10 +450,10 @@ impl SqliteStore {
     ) -> StorageResult<Vec<AuditRow>> {
         let limit = limit.clamp(1, 10_000) as i64;
         let sql = if audit_type.is_some() {
-            "SELECT timestamp_ms, audit_type, pid, comm, subject, action, target, status, summary
+            "SELECT timestamp_ms, audit_type, pid, comm, subject, action, target, status, summary, details_json
              FROM audit_events WHERE audit_type = ?1 ORDER BY timestamp_ms DESC LIMIT ?2"
         } else {
-            "SELECT timestamp_ms, audit_type, pid, comm, subject, action, target, status, summary
+            "SELECT timestamp_ms, audit_type, pid, comm, subject, action, target, status, summary, details_json
              FROM audit_events WHERE (?1 IS NULL) ORDER BY timestamp_ms DESC LIMIT ?2"
         };
         let mut stmt = self.conn.prepare(sql)?;
@@ -467,6 +468,7 @@ impl SqliteStore {
                 target: row.get(6)?,
                 status: row.get(7)?,
                 summary: row.get(8)?,
+                details: parse_json_value(&row.get::<_, String>(9)?),
             })
         })?;
         let mut out = Vec::new();
@@ -886,6 +888,7 @@ impl GenericProjector {
         action: &str,
     ) -> StorageResult<()> {
         let target = event.attributes.get("filename").and_then(|v| v.as_str());
+        let status = process_audit_status(action, &event.attributes);
         store.insert_audit_event(&AuditInsert {
             id: &format!("audit-{}", event.event_id),
             canonical_event_id: Some(event.event_id.as_str()),
@@ -896,7 +899,7 @@ impl GenericProjector {
             subject: event.comm.as_deref(),
             action: Some(action),
             target,
-            status: Some("observed"),
+            status: Some(status),
             summary: event.summary.as_deref(),
             details_json: &event.attributes.to_string(),
         })
@@ -922,6 +925,18 @@ impl GenericProjector {
             summary: event.summary.as_deref(),
             details_json: &event.attributes.to_string(),
         })
+    }
+}
+
+fn process_audit_status(action: &str, attributes: &Value) -> &'static str {
+    if action != "exit" {
+        return "observed";
+    }
+
+    match attributes.get("exit_code").and_then(|v| v.as_i64()) {
+        Some(0) => "success",
+        Some(_) => "failure",
+        None => "observed",
     }
 }
 

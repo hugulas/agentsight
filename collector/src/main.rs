@@ -167,6 +167,9 @@ enum DbCommands {
         /// SQLite database path (defaults to latest session)
         #[arg(long)]
         db: Option<String>,
+        /// Read the latest agent-native local session log instead of SQLite
+        #[arg(long)]
+        local: bool,
     },
     /// Query token usage from a SQLite database
     Token {
@@ -512,8 +515,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match &cli.command {
         Commands::Db(cmd) => {
             match cmd {
-                DbCommands::Summary { db } => {
-                    let resolved = resolve_db_or_latest(db).ok();
+                DbCommands::Summary { db, local } => {
+                    let resolved = if *local {
+                        None
+                    } else {
+                        resolve_db_or_latest(db).ok()
+                    };
                     run_db_summary(resolved.as_deref())?;
                 }
                 DbCommands::Import {

@@ -2,10 +2,12 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/eunomia-bpf/agentsight/actions/workflows/ci.yml/badge.svg)](https://github.com/eunomia-bpf/agentsight/actions/workflows/ci.yml)
+[![arXiv:2508.02736](https://img.shields.io/badge/arXiv-2508.02736-b31b1b.svg)](https://arxiv.org/abs/2508.02736)
+[![DOI:10.1145/3766882.3767169](https://img.shields.io/badge/DOI-10.1145%2F3766882.3767169-blue.svg)](https://dl.acm.org/doi/10.1145/3766882.3767169)
 
-**English** | [中文](README.zh-CN.md) [Arxiv](https://www.arxiv.org/abs/2508.02736)
+**English** | [中文](README.zh-CN.md)
 
-AgentSight is an observability tool designed specifically for monitoring LLM agent behavior through SSL/TLS traffic interception and process monitoring. Unlike traditional application-level instrumentation, AgentSight observes at the system boundary using eBPF technology, providing comprehensive insights into AI agent interactions with minimal performance overhead.
+AgentSight is a tracing tool for LLM agent behavior, combining SSL/TLS traffic interception with process and file-system monitoring. LLM/API traffic gives evidence about agent intent, while eBPF-observed process, file, network, and resource events show the system behavior that actually happened with minimal performance overhead.
 
 **✨ Zero Instrumentation Required** - No code changes, no new dependencies, no SDKs. Works with any AI framework or application out of the box.
 
@@ -20,6 +22,30 @@ wget https://github.com/eunomia-bpf/agentsight/releases/latest/download/agentsig
 # Or attach to an already-running agent by process name
 sudo ./agentsight record -c claude
 ```
+
+When the launched agent exits, `exec` prints a run summary. For the blog example:
+
+```bash
+./agentsight exec --db run.db -- claude "fix the failing API test"
+```
+
+```text
+────────────────────────────────────────────────────────────
+📊 Session Summary
+────────────────────────────────────────────────────────────
+agentsight session · 7s · 1 API calls · 1380 tokens
+
+  claude-sonnet-4-20250514 — 1 calls, 1380 tokens (in: 1200, out: 180)
+
+2 processes spawned: node(1), npm(1)
+3 files accessed: /workspace/app/src/api/handler.ts, /workspace/app/tests/api.test.ts, /workspace/app/package-lock.json
+Network: api.anthropic.com, registry.npmjs.org
+
+  Source: run.db
+────────────────────────────────────────────────────────────
+```
+
+The summary is intentionally grounded in observable effects: model/token usage, spawned processes, touched files, and network targets, so the agent's final claim can be checked against what changed on the machine.
 
 Open [http://127.0.0.1:7395](http://127.0.0.1:7395) to watch live.
 
@@ -124,6 +150,7 @@ make build
 Every `exec` session is automatically saved to SQLite. Query with `agentsight db`:
 
 ```bash
+agentsight db summary                 # high-level run summary
 agentsight db token                   # token usage (auto-finds latest session)
 agentsight db audit --json            # process spawns, file opens, API calls
 agentsight db list                    # all recorded sessions

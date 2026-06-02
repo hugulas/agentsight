@@ -47,11 +47,8 @@ pub(crate) fn default_session_db_path() -> Result<String, RunnerError> {
 
 pub(crate) fn print_session_summary(db_path: &str) {
     if let Ok(summary) = SessionSummary::from_sqlite(db_path) {
-        println!("\n{}", "─".repeat(60));
-        println!("📊 Session Summary");
-        println!("{}", "─".repeat(60));
+        println!();
         summary.print();
-        println!("{}", "─".repeat(60));
     }
 }
 

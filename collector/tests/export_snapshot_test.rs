@@ -6,8 +6,13 @@ use serde_json::Value;
 use std::process::{Command, Output};
 
 fn agentsight_output(args: &[&str]) -> Output {
+    agentsight_output_with_env(args, &[])
+}
+
+fn agentsight_output_with_env(args: &[&str], envs: &[(&str, &std::ffi::OsStr)]) -> Output {
     let output = Command::new(env!("CARGO_BIN_EXE_agentsight"))
         .args(args)
+        .envs(envs.iter().copied())
         .output()
         .expect("agentsight command should run");
     assert!(
@@ -26,6 +31,11 @@ fn run_agentsight(args: &[&str]) {
 
 fn agentsight_stdout(args: &[&str]) -> String {
     String::from_utf8(agentsight_output(args).stdout).expect("stdout should be UTF-8")
+}
+
+fn agentsight_stdout_with_env(args: &[&str], envs: &[(&str, &std::ffi::OsStr)]) -> String {
+    String::from_utf8(agentsight_output_with_env(args, envs).stdout)
+        .expect("stdout should be UTF-8")
 }
 
 #[test]
@@ -110,12 +120,64 @@ fn replay_then_export_snapshot_for_static_web() {
 }
 
 #[test]
-fn blog_agent_run_example_commands_are_real() {
+fn summary_omits_tokens_when_usage_is_unobserved() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let db = temp.path().join("blog-agent-run.db");
+    let db = temp.path().join("record.db");
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../docs/fixtures/no-token-run/input.jsonl");
+
+    run_agentsight(&[
+        "db",
+        "import",
+        "--input",
+        fixture.to_str().expect("fixture path"),
+        "--db",
+        db.to_str().expect("db path"),
+        "--no-adapters",
+    ]);
+
+    let summary = agentsight_stdout(&["db", "summary", "--db", db.to_str().expect("db path")]);
+    assert!(summary.contains("agentsight session"), "{summary}");
+    assert!(summary.contains("npm(1)"), "{summary}");
+    assert!(summary.contains("api.anthropic.com"), "{summary}");
+    assert!(
+        !summary.contains(" tokens"),
+        "summary should not invent token evidence:\n{summary}"
+    );
+}
+
+#[test]
+fn local_summary_reads_codex_session_jsonl() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let session_dir = temp.path().join(".codex/sessions/2026/06/02");
+    std::fs::create_dir_all(&session_dir).expect("session dir");
+    std::fs::write(
+        session_dir.join("rollout-test.jsonl"),
+        concat!(
+            "{\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-5.5\"}}\n",
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":11,\"output_tokens\":4,\"total_tokens\":15}}}}\n",
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\",\"name\":\"shell\"}}\n",
+        ),
+    )
+    .expect("codex session");
+
+    let summary = agentsight_stdout_with_env(
+        &["db", "summary", "--local"],
+        &[("HOME", temp.path().as_os_str())],
+    );
+    assert!(summary.contains("codex session"), "{summary}");
+    assert!(summary.contains("gpt-5.5"), "{summary}");
+    assert!(summary.contains("15 tokens"), "{summary}");
+    assert!(summary.contains("shell(1)"), "{summary}");
+}
+
+#[test]
+fn default_agent_run_summary_commands_are_real() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let db = temp.path().join("agent-run-summary.db");
     let snapshot = temp.path().join("snapshot.json");
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../docs/fixtures/blog-agent-run/input.jsonl");
+        .join("../docs/fixtures/agent-run-summary/input.jsonl");
 
     run_agentsight(&[
         "db",
@@ -131,8 +193,12 @@ fn blog_agent_run_example_commands_are_real() {
     assert!(summary.contains("agentsight session"), "{summary}");
     assert!(summary.contains("claude-sonnet-4-20250514"), "{summary}");
     assert!(summary.contains("1380 tokens"), "{summary}");
-    assert!(summary.contains("npm(1)"), "{summary}");
-    assert!(summary.contains("node(1)"), "{summary}");
+    assert!(summary.contains("npm(2)"), "{summary}");
+    assert!(summary.contains("node(2)"), "{summary}");
+    assert!(
+        summary.contains("4 process exits: failure(2), success(2)"),
+        "{summary}"
+    );
     assert!(summary.contains("package-lock.json"), "{summary}");
     assert!(summary.contains("api.anthropic.com"), "{summary}");
     assert!(summary.contains("registry.npmjs.org"), "{summary}");
@@ -149,6 +215,40 @@ fn blog_agent_run_example_commands_are_real() {
     ]);
     assert!(process_events.contains("/usr/bin/npm"), "{process_events}");
     assert!(process_events.contains("/usr/bin/node"), "{process_events}");
+    assert!(process_events.contains("success"), "{process_events}");
+    assert!(process_events.contains("failure"), "{process_events}");
+    assert!(process_events.contains("exit code 1"), "{process_events}");
+    assert!(process_events.contains("exit code 0"), "{process_events}");
+
+    let process_events_json = agentsight_stdout(&[
+        "db",
+        "audit",
+        "--db",
+        db.to_str().expect("db path"),
+        "--audit-type",
+        "process",
+        "--json",
+        "--limit",
+        "20",
+    ]);
+    let process_json: Value =
+        serde_json::from_str(&process_events_json).expect("process audit JSON");
+    assert!(
+        process_json
+            .as_array()
+            .expect("process events array")
+            .iter()
+            .any(|event| event["status"] == "failure" && event["details"]["exit_code"] == 1),
+        "{process_events_json}"
+    );
+    assert!(
+        process_json
+            .as_array()
+            .expect("process events array")
+            .iter()
+            .any(|event| event["details"]["argv"][0] == "npm"),
+        "{process_events_json}"
+    );
 
     let file_events = agentsight_stdout(&[
         "db",
