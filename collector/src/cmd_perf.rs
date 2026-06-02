@@ -304,12 +304,12 @@ fn load_resource_peaks(store: &mut SqliteStore) -> StorageResult<ResourcePeaks> 
             .or_else(|| data.get("pid").and_then(|v| v.as_u64()))
             .map(|v| v as u32);
 
-        if let Some(cpu) = number_or_string(data.get("cpu").and_then(|v| v.get("percent"))) {
-            if cpu >= peaks.max_cpu_percent {
-                peaks.max_cpu_percent = cpu;
-                peaks.max_cpu_comm = comm.clone();
-                peaks.max_cpu_pid = pid;
-            }
+        if let Some(cpu) = number_or_string(data.get("cpu").and_then(|v| v.get("percent")))
+            && cpu >= peaks.max_cpu_percent
+        {
+            peaks.max_cpu_percent = cpu;
+            peaks.max_cpu_comm = comm.clone();
+            peaks.max_cpu_pid = pid;
         }
         if let Some(rss_mb) = number_or_string(data.get("memory").and_then(|v| v.get("rss_mb"))) {
             let rss_mb = rss_mb.max(0.0) as u64;

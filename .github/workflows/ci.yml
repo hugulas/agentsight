@@ -234,3 +234,28 @@ jobs:
         generate_release_notes: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Smoke test published release artifact
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        RELEASE_TAG: ${{ steps.set_version.outputs.result }}
+      run: |
+        set -euo pipefail
+
+        smoke_dir="$(mktemp -d)"
+        gh release download "$RELEASE_TAG" \
+          --repo "$GITHUB_REPOSITORY" \
+          --pattern agentsight \
+          --dir "$smoke_dir" \
+          --clobber
+
+        chmod +x "$smoke_dir/agentsight"
+        "$smoke_dir/agentsight" --version
+        "$smoke_dir/agentsight" --help | tee "$smoke_dir/help.txt"
+
+        for cmd in stat top record report prompts list discover db debug; do
+          if ! grep -Eq "^[[:space:]]+$cmd[[:space:]]" "$smoke_dir/help.txt"; then
+            echo "::error::release artifact is missing '$cmd' in agentsight --help"
+            exit 1
+          fi
+        done
