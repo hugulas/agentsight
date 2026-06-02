@@ -39,6 +39,17 @@ fn agentsight_stdout_with_env(args: &[&str], envs: &[(&str, &std::ffi::OsStr)]) 
 }
 
 #[test]
+fn top_level_help_surfaces_perf_strace_flow() {
+    let help = agentsight_stdout(&["--help"]);
+    assert!(help.contains("perf/strace for AI agents"), "{help}");
+    assert!(help.contains("exec"), "{help}");
+    assert!(help.contains("record"), "{help}");
+    assert!(help.contains("report"), "{help}");
+    assert!(help.contains("prompts"), "{help}");
+    assert!(help.contains("list"), "{help}");
+}
+
+#[test]
 fn replay_no_adapters_skips_adapter_runs() {
     let temp = tempfile::tempdir().expect("tempdir");
     let db = temp.path().join("record.db");
@@ -136,7 +147,7 @@ fn summary_omits_tokens_when_usage_is_unobserved() {
         "--no-adapters",
     ]);
 
-    let summary = agentsight_stdout(&["db", "summary", "--db", db.to_str().expect("db path")]);
+    let summary = agentsight_stdout(&["report", "--db", db.to_str().expect("db path")]);
     assert!(summary.contains("agentsight session"), "{summary}");
     assert!(summary.contains("npm(1)"), "{summary}");
     assert!(summary.contains("api.anthropic.com"), "{summary}");
@@ -161,10 +172,8 @@ fn local_summary_reads_codex_session_jsonl() {
     )
     .expect("codex session");
 
-    let summary = agentsight_stdout_with_env(
-        &["db", "summary", "--local"],
-        &[("HOME", temp.path().as_os_str())],
-    );
+    let summary =
+        agentsight_stdout_with_env(&["report", "--local"], &[("HOME", temp.path().as_os_str())]);
     assert!(summary.contains("codex session"), "{summary}");
     assert!(summary.contains("gpt-5.5"), "{summary}");
     assert!(summary.contains("15 tokens"), "{summary}");
@@ -189,7 +198,7 @@ fn default_agent_run_summary_commands_are_real() {
         "--no-adapters",
     ]);
 
-    let summary = agentsight_stdout(&["db", "summary", "--db", db.to_str().expect("db path")]);
+    let summary = agentsight_stdout(&["report", "--db", db.to_str().expect("db path")]);
     assert!(summary.contains("agentsight session"), "{summary}");
     assert!(summary.contains("claude-sonnet-4-20250514"), "{summary}");
     assert!(summary.contains("1380 tokens"), "{summary}");
@@ -202,6 +211,18 @@ fn default_agent_run_summary_commands_are_real() {
     assert!(summary.contains("package-lock.json"), "{summary}");
     assert!(summary.contains("api.anthropic.com"), "{summary}");
     assert!(summary.contains("registry.npmjs.org"), "{summary}");
+
+    let prompts = agentsight_stdout(&["prompts", "--db", db.to_str().expect("db path")]);
+    assert!(prompts.contains("fix the failing API test"), "{prompts}");
+    assert!(prompts.contains("claude-sonnet-4-20250514"), "{prompts}");
+
+    let prompts_json =
+        agentsight_stdout(&["prompts", "--db", db.to_str().expect("db path"), "--json"]);
+    assert!(prompts_json.contains("\"request\""), "{prompts_json}");
+    assert!(
+        prompts_json.contains("fix the failing API test"),
+        "{prompts_json}"
+    );
 
     let process_events = agentsight_stdout(&[
         "db",

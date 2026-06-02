@@ -1,4 +1,4 @@
-# AgentSight: perf/strace for AI agents
+# AgentSight: System-wide AI agent tracing and monitoring with eBPF
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/eunomia-bpf/agentsight/actions/workflows/ci.yml/badge.svg)](https://github.com/eunomia-bpf/agentsight/actions/workflows/ci.yml)
@@ -7,7 +7,7 @@
 
 **English** | [中文](README.zh-CN.md)
 
-LLM agent observability with eBPF. See what coding agents actually do
+AgentSight is a perf/strace-like tool for AI agents. See what coding agents actually do
 to your machine, and connect those actions back to the prompts, model calls, and
 tool decisions that triggered them.
 
@@ -31,27 +31,33 @@ wget https://github.com/eunomia-bpf/agentsight/releases/latest/download/agentsig
 # Launch your agent with monitoring. AgentSight may prompt for sudo
 # to load eBPF probes; the agent itself still runs as your user.
 ./agentsight exec -- claude
+# Re-open the latest session summary after the agent exits.
+./agentsight report
 # Or attach to an already-running agent by process name
 sudo ./agentsight record -c claude
 ```
 
-When the launched agent exits, `exec` prints a run summary. For the blog example:
+When the launched agent exits, `exec` prints a run summary; `report` opens it again later. For the blog example:
 
 ```bash
 ./agentsight exec --db run.db -- claude "fix the failing API test"
+./agentsight report --db run.db
+./agentsight prompts --db run.db --json
 ```
 
 ```text
-agentsight session · 7s · 1 API calls · 1380 tokens
+agentsight session · 13s · 1 API calls · 1380 tokens
 
   claude-sonnet-4-20250514 — 1 calls, 1380 tokens (in: 1200, out: 180)
 
-2 processes spawned: node(1), npm(1)
+4 processes spawned: node(2), npm(2)
+4 process exits: failure(2), success(2)
 3 files accessed: /workspace/app/src/api/handler.ts, /workspace/app/tests/api.test.ts, /workspace/app/package-lock.json
 Network: api.anthropic.com, registry.npmjs.org
 ```
 
-The summary is intentionally grounded in observable effects: model/token usage, spawned processes, touched files, and network targets, so the agent's final claim can be checked against what changed on the machine.
+The summary is intentionally grounded in observable effects: model/token usage, failed and successful commands, touched files, and network targets, so the agent's final claim can be checked against what changed on the machine.
+Prompts and responses are available separately with `agentsight prompts --json` when AgentSight stored them in SQLite from parsed LLM traffic or adapters.
 
 Open [http://127.0.0.1:7395](http://127.0.0.1:7395) to watch live.
 
@@ -123,13 +129,14 @@ Build requirements and source build commands live in [docs/build.md](docs/build.
 
 ### Querying Past Sessions
 
-Every `exec` session is automatically saved to SQLite. Query with `agentsight db`:
+Every `exec` or `record` session is automatically saved to SQLite. Start with the perf-style commands, then use `agentsight db` for structured queries:
 
 ```bash
-agentsight db summary                 # high-level run summary
+agentsight report                     # high-level run summary
+agentsight list                       # all recorded sessions
+agentsight prompts --json             # full LLM request/response JSON
 agentsight db token                   # token usage (auto-finds latest session)
 agentsight db audit --json            # process spawns, file opens, API calls
-agentsight db list                    # all recorded sessions
 agentsight db export -o snapshot.json # export for web dashboard
 ```
 
@@ -374,7 +381,7 @@ A: eBPF probes need root privileges, so AgentSight may prompt for `sudo`. With `
 A: Our evaluation reports less than 3% CPU overhead for typical traced agent workloads.
 
 **Q: Where does captured data go?**
-A: `exec` stores sessions locally in SQLite by default. Use `agentsight db summary`, `agentsight db audit --json`, and `agentsight db token` to inspect prior runs. Captured data can include prompts, responses, paths, headers, and network targets, so treat logs and DBs as sensitive.
+A: `exec` stores sessions locally in SQLite by default. Use `agentsight report`, `agentsight list`, `agentsight db audit --json`, and `agentsight db token` to inspect prior runs. Captured data can include prompts, responses, paths, headers, and network targets, so treat logs and DBs as sensitive.
 
 **Q: Why doesn't AgentSight capture traffic from Claude Code, Node.js, or Gemini CLI?**
 A: These applications statically link their SSL library (BoringSSL for Claude/Bun, OpenSSL for **all** Node.js — both NVM and system installs) into their own binary instead of using system `libssl.so`, so there's nothing for sslsniff to hook by default. AgentSight handles this for you: `exec` always discovers the binary, and `record -c node` now auto-discovers the Node binary too. For Claude, pass `--binary-path` (or use `exec`). See the "Zero-Config: exec" and "Monitoring Node.js AI Tools" sections.

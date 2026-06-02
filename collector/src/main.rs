@@ -27,11 +27,11 @@ mod session;
 
 use cli_db::{
     AdapterCommand, configured_db_path, run_adapters_command, run_audit_query, run_db_summary,
-    run_export, run_replay, run_token_query,
+    run_export, run_prompts_query, run_replay, run_token_query,
 };
 use cli_discover::run_discover;
 use cmd_debug::{run_raw_process, run_raw_ssl, run_raw_stdio, run_system};
-use cmd_exec::run_exec;
+use cmd_exec::{default_session_db_path, print_session_summary, run_exec};
 use cmd_trace::{OtelConfig, TraceConfig, convert_runner_error, run_trace};
 use framework::{
     analyzers::{print_global_http_filter_metrics, print_global_ssl_filter_metrics},
@@ -71,8 +71,13 @@ async fn setup_signal_handler() {
 #[command(
     author,
     version,
-    about = "AgentSight: See what your AI agents actually do.\n\n\
-             eBPF probes require root — AgentSight auto-elevates them via sudo\n\
+    about = "AgentSight: perf/strace for AI agents.\n\n\
+             Common flow:\n\
+               agentsight exec -- claude\n\
+               agentsight record -c claude\n\
+               agentsight report\n\
+               agentsight prompts --json\n\n\
+             eBPF probes require root; AgentSight auto-elevates them via sudo\n\
              while your agent runs as your normal user."
 )]
 struct Cli {
@@ -84,6 +89,7 @@ struct Cli {
 enum Commands {
     /// Launch a command and automatically discover + trace it (zero config).
     /// Example: agentsight exec -- claude     (or)  agentsight exec -- python my_agent.py
+    #[command(visible_alias = "run")]
     Exec {
         /// Override the auto-discovered SSL binary path (rarely needed)
         #[arg(long)]
@@ -116,11 +122,19 @@ enum Commands {
         #[arg(last = true, required = true)]
         command: Vec<String>,
     },
-    /// Record agent activity with optimized filters and settings
+    /// Record an already-running agent by command name or PID
+    #[command(group(
+        clap::ArgGroup::new("target")
+            .required(true)
+            .args(["comm", "pid"])
+    ))]
     Record {
-        /// Process command filter (defaults to "claude")
-        #[arg(short = 'c', long)]
-        comm: String,
+        /// Process command filter, e.g. claude, codex, node, python
+        #[arg(short = 'c', long, conflicts_with = "pid")]
+        comm: Option<String>,
+        /// Process PID filter
+        #[arg(short = 'p', long, conflicts_with = "comm")]
+        pid: Option<u32>,
         /// Path to the binary executable to monitor (e.g., ~/.nvm/versions/node/v20.0.0/bin/node)
         #[arg(long)]
         binary_path: Option<String>,
@@ -146,6 +160,29 @@ enum Commands {
         #[arg(long, default_value = "7395")]
         server_port: u16,
     },
+    /// Show a report for the latest recorded session
+    Report {
+        /// SQLite database path (defaults to latest session)
+        #[arg(long)]
+        db: Option<String>,
+        /// Read the latest agent-native local session log instead of SQLite
+        #[arg(long)]
+        local: bool,
+    },
+    /// Show captured LLM prompts and responses when observable
+    Prompts {
+        /// SQLite database path (defaults to latest session)
+        #[arg(long)]
+        db: Option<String>,
+        /// Maximum rows
+        #[arg(long, default_value = "20")]
+        limit: usize,
+        /// Emit full request/response JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// List recorded session databases
+    List,
     /// Discover supported local agent CLIs and recommended capture settings
     Discover {
         /// Emit JSON output
@@ -195,6 +232,18 @@ enum DbCommands {
         #[arg(long, default_value = "100")]
         limit: usize,
         /// Emit JSON output
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show captured LLM prompts and responses when observable
+    Prompts {
+        /// SQLite database path (defaults to latest session)
+        #[arg(long)]
+        db: Option<String>,
+        /// Maximum rows
+        #[arg(long, default_value = "20")]
+        limit: usize,
+        /// Emit full request/response JSON
         #[arg(long)]
         json: bool,
     },
@@ -545,6 +594,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         cli_db::run_local_audit(*json)?;
                     }
                 }
+                DbCommands::Prompts { db, limit, json } => {
+                    let db = resolve_db_or_latest(db)?;
+                    run_prompts_query(&db, *limit, *json)?;
+                }
                 DbCommands::Export {
                     db,
                     output,
@@ -557,6 +610,24 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 DbCommands::Adapters { json, command } => run_adapters_command(*json, command)?,
                 DbCommands::List => run_db_list()?,
             }
+            return Ok(());
+        }
+        Commands::Report { db, local } => {
+            let resolved = if *local {
+                None
+            } else {
+                resolve_db_or_latest(db).ok()
+            };
+            run_db_summary(resolved.as_deref())?;
+            return Ok(());
+        }
+        Commands::Prompts { db, limit, json } => {
+            let db = resolve_db_or_latest(db)?;
+            run_prompts_query(&db, *limit, *json)?;
+            return Ok(());
+        }
+        Commands::List => {
+            run_db_list()?;
             return Ok(());
         }
         Commands::Discover { json } => {
@@ -597,6 +668,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .map_err(convert_runner_error)?,
         Commands::Record {
             comm,
+            pid,
             binary_path,
             log_file,
             db,
@@ -606,12 +678,30 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             max_log_size,
             server_port,
         } => {
+            let db_path = match configured_db_path(db) {
+                Some(path) => Some(path),
+                None => match default_session_db_path() {
+                    Ok(path) => {
+                        session::cleanup_old_sessions();
+                        Some(path)
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "⚠ Could not create session DB ({}), continuing without it.",
+                            e
+                        );
+                        None
+                    }
+                },
+            };
+            let db_path_for_summary = db_path.clone();
             // Predefined filter patterns optimized for agent monitoring. Enables
             // SSL + process + system monitoring and the web server by default.
             let cfg = TraceConfig {
                 name: "trace",
                 ssl: true,
-                comm: Some(comm.clone()),
+                pid: *pid,
+                comm: comm.clone(),
                 ssl_filter: vec!["data=0\\r\\n\\r\\n".to_string()],
                 ssl_http: true,
                 process: true,
@@ -621,7 +711,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 http_filter: vec!["request.path_prefix=/v1/rgstr | response.status_code=202 | request.method=HEAD | response.body=".to_string()],
                 binary_path: binary_path.clone(),
                 log_file: log_file.clone(),
-                db_path: configured_db_path(db),
+                db_path,
                 adapter: (!*no_adapters).then_some(adapter.clone()),
                 quiet: true,
                 rotate_logs: *rotate_logs,
@@ -632,7 +722,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             };
             run_trace(&binary_extractor, cfg)
                 .await
-                .map_err(convert_runner_error)?
+                .map_err(convert_runner_error)?;
+            if let Some(ref db) = db_path_for_summary {
+                print_session_summary(db);
+            }
         }
         Commands::Debug(cmd) => match cmd {
             DebugCommands::Ssl {
@@ -823,7 +916,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .map_err(convert_runner_error)?,
         },
         // Already handled above; unreachable but needed for exhaustive match.
-        Commands::Db(_) | Commands::Discover { .. } => unreachable!(),
+        Commands::Db(_)
+        | Commands::Discover { .. }
+        | Commands::Report { .. }
+        | Commands::Prompts { .. }
+        | Commands::List => unreachable!(),
     }
 
     Ok(())

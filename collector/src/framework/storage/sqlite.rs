@@ -54,6 +54,25 @@ pub struct AuditRow {
     pub details: Value,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmCallRow {
+    pub id: String,
+    pub start_timestamp_ms: u64,
+    pub end_timestamp_ms: Option<u64>,
+    pub pid: Option<u32>,
+    pub comm: Option<String>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub host: Option<String>,
+    pub path: Option<String>,
+    pub status_code: Option<u16>,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub total_tokens: i64,
+    pub request: Value,
+    pub response: Value,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct SnapshotOptions {
     pub event_limit: usize,
@@ -469,6 +488,56 @@ impl SqliteStore {
                 status: row.get(7)?,
                 summary: row.get(8)?,
                 details: parse_json_value(&row.get::<_, String>(9)?),
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    pub fn llm_call_rows(&self, limit: usize) -> StorageResult<Vec<LlmCallRow>> {
+        let limit = limit.clamp(1, 10_000) as i64;
+        let mut stmt = self.conn.prepare(
+            "SELECT
+                l.id, l.start_timestamp_ms, l.end_timestamp_ms, l.pid, l.comm,
+                l.provider, l.model, l.host, l.path, l.status_code,
+                COALESCE(t.input_tokens, 0), COALESCE(t.output_tokens, 0),
+                COALESCE(t.total_tokens, 0),
+                COALESCE(l.request_body_json, '{}'),
+                COALESCE(l.response_body_json, '{}')
+             FROM llm_calls l
+             LEFT JOIN (
+                SELECT llm_call_id,
+                       SUM(input_tokens) AS input_tokens,
+                       SUM(output_tokens) AS output_tokens,
+                       SUM(total_tokens) AS total_tokens
+                FROM token_usage
+                GROUP BY llm_call_id
+             ) t ON t.llm_call_id = l.id
+             ORDER BY l.start_timestamp_ms DESC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit], |row| {
+            let request_json: String = row.get(13)?;
+            let response_json: String = row.get(14)?;
+            Ok(LlmCallRow {
+                id: row.get(0)?,
+                start_timestamp_ms: row.get::<_, i64>(1)? as u64,
+                end_timestamp_ms: row.get::<_, Option<i64>>(2)?.map(|v| v as u64),
+                pid: row.get::<_, Option<i64>>(3)?.map(|v| v as u32),
+                comm: row.get(4)?,
+                provider: row.get(5)?,
+                model: row.get(6)?,
+                host: row.get(7)?,
+                path: row.get(8)?,
+                status_code: row.get::<_, Option<i64>>(9)?.map(|v| v as u16),
+                input_tokens: row.get(10)?,
+                output_tokens: row.get(11)?,
+                total_tokens: row.get(12)?,
+                request: parse_json_value(&request_json),
+                response: parse_json_value(&response_json),
             })
         })?;
         let mut out = Vec::new();

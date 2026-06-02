@@ -40,7 +40,8 @@ pub(crate) fn resolve_db_or_latest(
         return Ok(db.clone());
     }
     latest_session_db().ok_or_else(|| {
-        "No session database found. Run `agentsight exec` first or pass --db.".into()
+        "No session database found. Run `agentsight exec` or `agentsight record` first, or pass --db."
+            .into()
     })
 }
 

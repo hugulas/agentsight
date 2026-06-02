@@ -136,6 +136,35 @@ pub(crate) fn run_audit_query(
     Ok(())
 }
 
+pub(crate) fn run_prompts_query(
+    db: &str,
+    limit: usize,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let store = SqliteStore::open(db)?;
+    let rows = store.llm_call_rows(limit)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+    } else {
+        println!("LLM prompts");
+        println!(
+            "{:<15} {:<16} {:<28} {:>8} prompt",
+            "timestamp_ms", "comm", "model", "tokens"
+        );
+        for row in rows {
+            println!(
+                "{:<15} {:<16} {:<28} {:>8} {}",
+                row.start_timestamp_ms,
+                truncate(row.comm.as_deref().unwrap_or("-"), 16),
+                truncate(row.model.as_deref().unwrap_or("-"), 28),
+                row.total_tokens,
+                prompt_preview(&row.request, 96)
+            );
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn run_export(
     db: &str,
     output: &str,
@@ -533,6 +562,53 @@ fn truncate(s: &str, max: usize) -> String {
     let mut out: String = s.chars().take(max - 3).collect();
     out.push_str("...");
     out
+}
+
+fn prompt_preview(value: &serde_json::Value, max: usize) -> String {
+    let text = extract_prompt_text(value).unwrap_or_else(|| value.to_string());
+    truncate(&text.split_whitespace().collect::<Vec<_>>().join(" "), max)
+}
+
+fn extract_prompt_text(value: &serde_json::Value) -> Option<String> {
+    if let Some(prompt) = value.get("prompt").and_then(|v| v.as_str()) {
+        return Some(prompt.to_string());
+    }
+
+    let mut parts = Vec::new();
+    if let Some(messages) = value.get("messages").and_then(|v| v.as_array()) {
+        for message in messages {
+            collect_content_text(message.get("content").unwrap_or(message), &mut parts);
+        }
+    }
+    if let Some(contents) = value.get("contents").and_then(|v| v.as_array()) {
+        for content in contents {
+            collect_content_text(content, &mut parts);
+        }
+    }
+
+    (!parts.is_empty()).then(|| parts.join(" "))
+}
+
+fn collect_content_text(value: &serde_json::Value, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::String(s) => out.push(s.clone()),
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_content_text(item, out);
+            }
+        }
+        serde_json::Value::Object(obj) => {
+            for key in ["text", "content"] {
+                if let Some(v) = obj.get(key) {
+                    collect_content_text(v, out);
+                }
+            }
+            if let Some(parts) = obj.get("parts") {
+                collect_content_text(parts, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 // ---------------------------------------------------------------------------

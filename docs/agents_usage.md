@@ -10,6 +10,8 @@ agent are left on the terminal and are not written to SQLite. AgentSight records
 OS-side process/file/network facts, then derives model/token data only from
 network request/response/telemetry that can be parsed or from explicit
 agent-native local session logs such as `~/.claude` and `~/.codex`.
+Use `agentsight prompts --json` to inspect LLM request/response bodies that
+were stored in SQLite from parsed network traffic or SQL adapters.
 
 Use the debug binary shown below from the repository root, or replace
 `./collector/target/debug/agentsight` with `agentsight` after installation.
@@ -58,8 +60,9 @@ sudo -n env PATH="$PATH" HOME="$HOME" \
 Summary:
 
 ```bash
-./collector/target/debug/agentsight db summary --db /tmp/agentsight-claude.db
-./collector/target/debug/agentsight db summary --local
+./collector/target/debug/agentsight report --db /tmp/agentsight-claude.db
+./collector/target/debug/agentsight prompts --db /tmp/agentsight-claude.db --json
+./collector/target/debug/agentsight report --local
 ```
 
 Evidence sources:
@@ -111,7 +114,7 @@ rm -rf "$tmp"
 Local Codex summary:
 
 ```bash
-./collector/target/debug/agentsight db summary --local
+./collector/target/debug/agentsight report --local
 ```
 
 Evidence sources:
@@ -121,7 +124,7 @@ Evidence sources:
   `~/.codex/sessions`.
 - Current SQLite SQL adapters do not include a Codex-specific projection.
   In the tested run, the AgentSight SQLite summary correctly showed OS facts
-  without token claims; `db summary --local` showed Codex model, tokens, and
+  without token claims; `report --local` showed Codex model, tokens, and
   tool calls from `.codex/sessions`.
 
 Test result on this machine:
@@ -129,7 +132,7 @@ Test result on this machine:
 - `codex --version`, `codex --help`, and `codex exec --help` passed.
 - Direct Codex prompt passed and printed `agentsight-smoke`.
 - AgentSight-wrapped Codex prompt passed and printed `agentsight-smoke`.
-- `agentsight db summary --local` returned a `codex session` with model/token
+- `agentsight report --local` returned a `codex session` with model/token
   and tool-call summary.
 - Integration test added: `cargo test --test export_snapshot_test local_summary_reads_codex_session_jsonl`.
 
