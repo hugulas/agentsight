@@ -753,6 +753,7 @@ impl GenericProjector {
             }
             EventKind::ProcessExec => self.project_process_audit(store, event, "exec")?,
             EventKind::ProcessExit => self.project_process_audit(store, event, "exit")?,
+            EventKind::FsOpen if is_writable_open(event) => self.project_file_audit(store, event)?,
             EventKind::FsWrite | EventKind::FsMutation => self.project_file_audit(store, event)?,
             _ => {}
         }
@@ -920,6 +921,19 @@ impl GenericProjector {
             details_json: &event.attributes.to_string(),
         })
     }
+}
+
+fn is_writable_open(event: &CanonicalEvent) -> bool {
+    let flags = event
+        .attributes
+        .get("flags")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(0);
+    const O_ACCMODE: i64 = 0o3;
+    const O_CREAT: i64 = 0o100;
+    const O_TRUNC: i64 = 0o1000;
+    const O_APPEND: i64 = 0o2000;
+    (flags & O_ACCMODE) != 0 || (flags & (O_CREAT | O_TRUNC | O_APPEND)) != 0
 }
 
 struct LlmCallInsert<'a> {
@@ -1224,6 +1238,46 @@ mod tests {
         let summary = store.token_summary("model").unwrap();
         assert_eq!(summary.len(), 1);
         assert_eq!(summary[0].total_tokens, 15);
+    }
+
+    #[test]
+    fn writable_file_open_projects_file_audit_event() {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let mut projector = GenericProjector::new();
+        let write_open = Event::new_with_timestamp(
+            1,
+            "process".to_string(),
+            42,
+            "agent".to_string(),
+            json!({
+                "event": "FILE_OPEN",
+                "filepath": "/tmp/package-lock.json",
+                "flags": 65
+            }),
+        );
+        let read_open = Event::new_with_timestamp(
+            2,
+            "process".to_string(),
+            42,
+            "agent".to_string(),
+            json!({
+                "event": "FILE_OPEN",
+                "filepath": "/tmp/README.md",
+                "flags": 0
+            }),
+        );
+        store.insert_event(&write_open, &mut projector).unwrap();
+        store.insert_event(&read_open, &mut projector).unwrap();
+
+        let target: String = store
+            .connection()
+            .query_row(
+                "SELECT target FROM audit_events WHERE audit_type = 'file'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(target, "/tmp/package-lock.json");
     }
 
     #[test]

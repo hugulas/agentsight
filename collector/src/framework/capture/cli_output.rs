@@ -14,6 +14,9 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
 pub const CLI_OUTPUT_CAPTURE_MAX_BYTES: usize = 8 * 1024 * 1024;
 
+/// This gates optional stdout/stderr evidence capture, not process tracing.
+/// Unknown commands still run and are traced at the OS boundary; their terminal
+/// output is not stored unless AgentSight knows how to parse and redact it.
 pub fn should_capture_cli_output(program: &str, args: &[String], db_path: Option<&str>) -> bool {
     if db_path.is_none() {
         return false;
@@ -24,8 +27,11 @@ pub fn should_capture_cli_output(program: &str, args: &[String], db_path: Option
         .and_then(|s| s.to_str())
         .unwrap_or(program)
         .to_ascii_lowercase();
-    let known_agent_cli = matches!(base.as_str(), "claude" | "gemini" | "openclaw");
-    if !known_agent_cli {
+    let structured_cli_output_supported = matches!(
+        base.as_str(),
+        "claude" | "gemini" | "openclaw" | "opencode" | "codex"
+    );
+    if !structured_cli_output_supported {
         return false;
     }
 
@@ -34,15 +40,28 @@ pub fn should_capture_cli_output(program: &str, args: &[String], db_path: Option
             arg.as_str(),
             "-p" | "--print" | "--prompt" | "--local" | "--gateway"
         )
-    });
+    }) || (base == "opencode"
+        && args
+            .iter()
+            .any(|arg| matches!(arg.as_str(), "run" | "--command")))
+        || (base == "codex"
+            && args
+                .iter()
+                .any(|arg| matches!(arg.as_str(), "exec" | "e" | "review")));
     let structured_output = args.iter().enumerate().any(|(idx, arg)| {
         arg == "--json"
             || arg == "--output-format=json"
             || arg == "--output-format=stream-json"
+            || arg == "--format=json"
             || (arg == "--output-format"
                 && args
                     .get(idx + 1)
                     .map(|value| value == "json" || value == "stream-json")
+                    .unwrap_or(false))
+            || (arg == "--format"
+                && args
+                    .get(idx + 1)
+                    .map(|value| value == "json")
                     .unwrap_or(false))
     });
 
@@ -218,6 +237,95 @@ fn sanitize_claude_cli_json(value: &Value) -> Option<Value> {
     }
 }
 
+fn sanitize_opencode_cli_json(value: &Value) -> Option<Value> {
+    fn sanitize_event(value: &Value) -> Option<Value> {
+        let event_type = value.get("type").and_then(|v| v.as_str())?;
+        match event_type {
+            "step_finish" => Some(serde_json::json!({
+                "type": "step_finish",
+                "timestamp": value.get("timestamp"),
+                "sessionID": value.get("sessionID"),
+                "part": {
+                    "reason": value.pointer("/part/reason"),
+                    "messageID": value.pointer("/part/messageID"),
+                    "tokens": value.pointer("/part/tokens"),
+                    "cost": value.pointer("/part/cost")
+                }
+            })),
+            "tool_use" => Some(serde_json::json!({
+                "type": "tool_use",
+                "timestamp": value.get("timestamp"),
+                "sessionID": value.get("sessionID"),
+                "part": {
+                    "tool": value.pointer("/part/tool"),
+                    "callID": value.pointer("/part/callID"),
+                    "messageID": value.pointer("/part/messageID"),
+                    "state": {
+                        "status": value.pointer("/part/state/status"),
+                        "input_redacted": true,
+                        "metadata": value.pointer("/part/state/metadata"),
+                        "title": value.pointer("/part/state/title"),
+                        "time": value.pointer("/part/state/time")
+                    }
+                }
+            })),
+            _ => None,
+        }
+    }
+
+    match value {
+        Value::Array(values) => {
+            let events: Vec<_> = values.iter().filter_map(sanitize_event).collect();
+            (!events.is_empty()).then_some(Value::Array(events))
+        }
+        Value::Object(_) => sanitize_event(value),
+        _ => None,
+    }
+}
+
+fn sanitize_codex_cli_json(value: &Value) -> Option<Value> {
+    fn sanitize_event(value: &Value) -> Option<Value> {
+        match value.get("type").and_then(|v| v.as_str())? {
+            "thread.started" => Some(serde_json::json!({
+                "type": "thread.started",
+                "thread_id": value.get("thread_id")
+            })),
+            "turn.completed" => Some(serde_json::json!({
+                "type": "turn.completed",
+                "usage": value.get("usage")
+            })),
+            "item.completed" => {
+                if value.pointer("/item/type").and_then(|v| v.as_str())
+                    != Some("command_execution")
+                {
+                    return None;
+                }
+                Some(serde_json::json!({
+                    "type": "item.completed",
+                    "item": {
+                        "id": value.pointer("/item/id"),
+                        "type": "command_execution",
+                        "status": value.pointer("/item/status"),
+                        "exit_code": value.pointer("/item/exit_code"),
+                        "command_redacted": true,
+                        "output_redacted": true
+                    }
+                }))
+            }
+            _ => None,
+        }
+    }
+
+    match value {
+        Value::Array(values) => {
+            let events: Vec<_> = values.iter().filter_map(sanitize_event).collect();
+            (!events.is_empty()).then_some(Value::Array(events))
+        }
+        Value::Object(_) => sanitize_event(value),
+        _ => None,
+    }
+}
+
 fn sanitize_cli_parsed_json(program: &str, value: &Value) -> Option<Value> {
     let base = std::path::Path::new(program)
         .file_name()
@@ -228,6 +336,8 @@ fn sanitize_cli_parsed_json(program: &str, value: &Value) -> Option<Value> {
     match base.as_str() {
         "gemini" => sanitize_gemini_cli_json(value),
         "claude" => sanitize_claude_cli_json(value),
+        "opencode" => sanitize_opencode_cli_json(value),
+        "codex" => sanitize_codex_cli_json(value),
         _ => None,
     }
 }
@@ -397,6 +507,35 @@ mod tests {
     }
 
     #[test]
+    fn captures_opencode_run_json_output() {
+        let args = vec![
+            "run".to_string(),
+            "--format".to_string(),
+            "json".to_string(),
+            "hi".to_string(),
+        ];
+        assert!(should_capture_cli_output(
+            "opencode",
+            &args,
+            Some("record.db")
+        ));
+    }
+
+    #[test]
+    fn captures_codex_exec_json_output() {
+        let args = vec![
+            "exec".to_string(),
+            "--json".to_string(),
+            "hi".to_string(),
+        ];
+        assert!(should_capture_cli_output(
+            "codex",
+            &args,
+            Some("record.db")
+        ));
+    }
+
+    #[test]
     fn cli_output_event_redacts_text_and_prompt_args() {
         let event = build_cli_output_event(
             1,
@@ -453,6 +592,61 @@ mod tests {
         assert_eq!(
             event.data["parsed_json"]["message"]["content"][0]["input_redacted"],
             true
+        );
+    }
+
+    #[test]
+    fn opencode_cli_output_redacts_tool_content_but_keeps_metadata() {
+        let event = build_cli_output_event(
+            1,
+            "opencode",
+            &[
+                "run".to_string(),
+                "--format".to_string(),
+                "json".to_string(),
+            ],
+            42,
+            "opencode",
+            "stdout",
+            br#"{"type":"tool_use","timestamp":1780382677191,"sessionID":"s1","part":{"type":"tool","tool":"write","callID":"call_1","state":{"status":"completed","input":{"filePath":"/tmp/package-lock.json","content":"secret content"},"output":"Wrote file successfully.","metadata":{"filepath":"/tmp/package-lock.json","exists":false},"title":"tmp/package-lock.json","time":{"start":1,"end":2}},"messageID":"msg_1"}}"#,
+            None,
+        )
+        .expect("event");
+
+        let rendered = event.data.to_string();
+        assert!(rendered.contains("/tmp/package-lock.json"));
+        assert!(rendered.contains("input_redacted"));
+        assert!(!rendered.contains("secret content"));
+        assert_eq!(event.data["text_redacted"], true);
+    }
+
+    #[test]
+    fn codex_cli_output_redacts_command_text_but_keeps_usage() {
+        let event = build_cli_output_event(
+            1,
+            "codex",
+            &[
+                "exec".to_string(),
+                "--json".to_string(),
+                "secret prompt".to_string(),
+            ],
+            42,
+            "codex",
+            "stdout",
+            br#"{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"/bin/bash -lc 'cat secret.txt'","aggregated_output":"secret","exit_code":0,"status":"completed"}}
+{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":4,"output_tokens":2,"reasoning_output_tokens":1}}"#,
+            None,
+        )
+        .expect("event");
+
+        let rendered = event.data.to_string();
+        assert!(rendered.contains("command_redacted"));
+        assert!(rendered.contains("input_tokens"));
+        assert!(!rendered.contains("secret.txt"));
+        assert!(!rendered.contains("secret prompt"));
+        assert_eq!(
+            event.data["parsed_json"][1]["usage"]["input_tokens"],
+            10
         );
     }
 

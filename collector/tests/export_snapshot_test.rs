@@ -3,9 +3,9 @@
 
 use rusqlite::Connection;
 use serde_json::Value;
-use std::process::Command;
+use std::process::{Command, Output};
 
-fn run_agentsight(args: &[&str]) {
+fn agentsight_output(args: &[&str]) -> Output {
     let output = Command::new(env!("CARGO_BIN_EXE_agentsight"))
         .args(args)
         .output()
@@ -17,6 +17,15 @@ fn run_agentsight(args: &[&str]) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    output
+}
+
+fn run_agentsight(args: &[&str]) {
+    agentsight_output(args);
+}
+
+fn agentsight_stdout(args: &[&str]) -> String {
+    String::from_utf8(agentsight_output(args).stdout).expect("stdout should be UTF-8")
 }
 
 #[test]
@@ -97,5 +106,103 @@ fn replay_then_export_snapshot_for_static_web() {
             .as_array()
             .expect("interruptions")
             .is_empty()
+    );
+}
+
+#[test]
+fn blog_agent_run_example_commands_are_real() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let db = temp.path().join("blog-agent-run.db");
+    let snapshot = temp.path().join("snapshot.json");
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../docs/fixtures/blog-agent-run/input.jsonl");
+
+    run_agentsight(&[
+        "db",
+        "import",
+        "--input",
+        fixture.to_str().expect("fixture path"),
+        "--db",
+        db.to_str().expect("db path"),
+        "--no-adapters",
+    ]);
+
+    let summary = agentsight_stdout(&[
+        "db",
+        "summary",
+        "--db",
+        db.to_str().expect("db path"),
+    ]);
+    assert!(summary.contains("agentsight session"), "{summary}");
+    assert!(summary.contains("claude-sonnet-4-20250514"), "{summary}");
+    assert!(summary.contains("1380 tokens"), "{summary}");
+    assert!(summary.contains("npm(1)"), "{summary}");
+    assert!(summary.contains("node(1)"), "{summary}");
+    assert!(summary.contains("package-lock.json"), "{summary}");
+    assert!(summary.contains("api.anthropic.com"), "{summary}");
+    assert!(summary.contains("registry.npmjs.org"), "{summary}");
+
+    let process_events = agentsight_stdout(&[
+        "db",
+        "audit",
+        "--db",
+        db.to_str().expect("db path"),
+        "--audit-type",
+        "process",
+        "--limit",
+        "20",
+    ]);
+    assert!(process_events.contains("/usr/bin/npm"), "{process_events}");
+    assert!(process_events.contains("/usr/bin/node"), "{process_events}");
+
+    let file_events = agentsight_stdout(&[
+        "db",
+        "audit",
+        "--db",
+        db.to_str().expect("db path"),
+        "--audit-type",
+        "file",
+        "--json",
+        "--limit",
+        "20",
+    ]);
+    let file_json: Value = serde_json::from_str(&file_events).expect("file audit JSON");
+    assert!(
+        file_json
+            .as_array()
+            .expect("file events array")
+            .iter()
+            .any(|event| event["target"] == "/workspace/app/package-lock.json"),
+        "{file_events}"
+    );
+
+    let token = agentsight_stdout(&[
+        "db",
+        "token",
+        "--db",
+        db.to_str().expect("db path"),
+        "--json",
+    ]);
+    let token_json: Value = serde_json::from_str(&token).expect("token JSON");
+    assert_eq!(token_json[0]["total_tokens"], 1380);
+
+    run_agentsight(&[
+        "db",
+        "export",
+        "--db",
+        db.to_str().expect("db path"),
+        "--output",
+        snapshot.to_str().expect("snapshot path"),
+    ]);
+    let snapshot_json: Value =
+        serde_json::from_slice(&std::fs::read(&snapshot).expect("snapshot should be written"))
+            .expect("snapshot should be valid JSON");
+    assert_eq!(snapshot_json["summary"]["total_tokens"], 1380);
+    assert!(
+        snapshot_json["audit_events"]
+            .as_array()
+            .expect("audit events")
+            .iter()
+            .any(|event| event["target"] == "/workspace/app/package-lock.json")
     );
 }

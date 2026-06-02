@@ -23,7 +23,7 @@ pub(crate) enum AdapterCommand {
         /// SQLite database path
         #[arg(long)]
         db: String,
-        /// SQL adapter to run: auto, anthropic, claude-code, openclaw, gemini-cli
+        /// SQL adapter to run: auto, anthropic, claude-code, openclaw, gemini-cli, opencode, codex
         #[arg(long, default_value = "auto")]
         adapter: String,
     },
@@ -252,7 +252,7 @@ pub(crate) struct SessionSummary {
 
 impl SessionSummary {
     pub fn from_sqlite(db: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let store = SqliteStore::open(db)?;
+        let mut store = SqliteStore::open(db)?;
         let snap = store.export_snapshot(SnapshotOptions { event_limit: 50_000, audit_limit: 50_000 })?;
         let s = &snap.summary;
         let duration_s = match (s.start_timestamp_ms, s.end_timestamp_ms) {
@@ -278,7 +278,23 @@ impl SessionSummary {
             .filter_map(|e| e.host.clone())
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter().collect();
-        Ok(Self { source: "agentsight".into(), duration_s, models, processes, tool_calls: BTreeMap::new(), files, endpoints, db_path: Some(db.into()) })
+        let mut tool_calls = BTreeMap::new();
+        {
+            let mut stmt = store.connection_mut().prepare(
+                "SELECT COALESCE(tool_name, '?'), COUNT(*)
+                 FROM tool_calls
+                 GROUP BY COALESCE(tool_name, '?')
+                 ORDER BY COUNT(*) DESC",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
+            })?;
+            for row in rows {
+                let (name, count) = row?;
+                tool_calls.insert(name, count);
+            }
+        }
+        Ok(Self { source: "agentsight".into(), duration_s, models, processes, tool_calls, files, endpoints, db_path: Some(db.into()) })
     }
 
     pub fn from_local_jsonl(source: &str, file: &str, data: &serde_json::Value) -> Self {
@@ -530,4 +546,3 @@ fn parse_local_session(source: &str, content: &str) -> serde_json::Value {
     if models.is_empty() { return serde_json::Value::Null; }
     serde_json::json!({ "models": models, "tools": tools, "duration_ms": duration_ms, "num_turns": num_turns, "cost_usd": cost_usd })
 }
-

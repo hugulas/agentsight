@@ -14,6 +14,9 @@
 
 > 我们一直在观察 agent 的叙事，却没有观察 agent 改变过的世界。
 
+
+这也是我们做 [AgentSight](https://github.com/eunomia-bpf/agentsight) 的出发点：一个本地优先、类似 `perf` 的 agent 追踪和可观测工具, 先记录 agent 实际启动了什么进程、改了哪些文件、发生了哪些 LLM/API 和网络活动。
+
 ## 一个流行但不够完整的信念
 
 现在很多人对 agent observability 的默认理解是：
@@ -305,6 +308,116 @@ MCP、skills、plugins 把问题进一步放大。
 
 因为很多分析其实不必由观测工具自己做。Review agent 可以读这份数据。CI policy 可以读这份数据。研究者可以用它做 dataset。用户可以问：“这次 run 到底改了什么？”
 
+## 这就是我们做 AgentSight 的原因
+
+前面一直没有提工具，是刻意的。因为如果论点不成立，工具名字不重要；如果论点成立，工具也不应该先长成一个复杂平台。
+
+我们在做 [AgentSight](https://github.com/eunomia-bpf/agentsight) 时，希望它被理解成一个更像 `perf` 的本地工具，而不是又一个 agent dashboard:
+
+`perf` 的价值不是替你判断程序“好不好”，而是把运行时事实变成可保存、可查询、可分析的记录。AgentSight 想做的是类似的事情，只是对象从普通进程变成了 agent run。
+
+也就是说，AgentSight 的第一职责不是替 agent 做决定，而是记录 agent 操作真实系统时留下的世界时间线。
+
+一个典型用法应该尽量普通：
+
+```bash
+agentsight exec -- claude
+agentsight exec -- gemini
+agentsight exec -- python my_agent.py
+```
+
+或者 attach 到已经运行的 agent：
+
+```bash
+agentsight record -c claude
+agentsight record -c node
+```
+
+这背后的设计取舍是：
+
+- **本地优先**：session 先保存在本地 SQLite；本地 Web UI 可以看 timeline、process tree、metrics，但 UI 不是唯一入口。
+- **零 instrumentation**：不要求改 agent 代码、不要求接 SDK、不要求把 provider traffic 走代理。
+- **系统边界观察**：用 eBPF 在系统边界记录进程、文件、资源等行为；能捕获时，也在 SSL/TLS 调用边界看到 LLM payload。
+- **record first, interpret later**：先把事实保存成可查询、可导出、可被另一个 agent 消费的数据，再做总结、解释、policy 或 PR comment。
+- **和现有 trace 工具互补**：它不需要替代 prompt tracing、eval、LLM gateway 或 OpenTelemetry 后端；更合理的角色是补上它们通常看不到的 process/file/network side effects。
+
+这也是为什么我觉得 “perf-like” 这个类比比 “dashboard” 更准确。
+
+Dashboard 默认暗示人坐在那里看图。Agent run 的关键问题往往发生在事后：PR 要 review、失败要恢复、token 账单要解释、MCP tool 要验收、用户要问“刚才到底发生了什么”。这些场景需要的不是永远打开的页面，而是一份可复盘的运行记录。
+
+所以 AgentSight 最重要的输出不应该是漂亮截图，而应该是这些东西：
+
+- 一次 run 的 process tree。
+- 命令和子进程的 cwd、argv、exit status、duration。
+- 文件读写、删除、rename、truncate 的路径清单。
+- repo 内外、敏感路径、用户目录、cloud config 的分类。
+- LLM 调用、token、工具调用和系统 side effects 之间的时间关联。
+- 可以导出的 JSON / SQLite / report artifact。
+- 可以被 review agent、CI policy、研究脚本继续消费的数据。
+
+一个具体例子会更清楚。
+
+假设你让 agent 修一个后端测试：
+
+```bash
+agentsight exec -- claude "fix the failing API test"
+```
+
+Agent 最后给你的总结是：
+
+```text
+Fixed the API test and ran npm test successfully.
+```
+
+这句话不一定是谎言。它可能只是把自己最后一次看到的局部结果，当成了整次 run 的事实。AgentSight 里更有用的输出应该长这样：
+
+```text
+$ agentsight report --latest
+
+Session
+  agent: claude
+  task: fix the failing API test
+  duration: 18m42s
+
+Observed
+  Commands
+    npm test                         exit=1   duration=74s
+    npm test tests/api.test.ts       exit=0   duration=11s
+
+  Files changed
+    M src/api/handler.ts
+    M tests/api.test.ts
+    M package-lock.json              unexpected lockfile rewrite
+
+  Reads outside repo
+    ~/.npmrc                         package manager config
+
+  Network
+    registry.npmjs.org               package metadata fetch
+
+  Flags
+    full_test_failed_then_partial_test_passed
+    lockfile_changed_without_dependency_request
+    config_read_outside_workspace
+```
+
+这份输出没有替你判断代码好不好。它只是把 review 真正需要的问题摆到了桌面上：
+
+- 这个 PR 不能简单写“tests passed”，因为全量测试失败过。
+- `package-lock.json` 为什么变了，需要解释或 revert。
+- 读取 `~/.npmrc` 可能完全正常，也可能说明 package manager 状态影响了复现性。
+- 如果这是 CI 或团队策略，可以要求 “backend code changed 后必须看到全量测试 exit=0”。
+
+这个例子的价值不在于它抓到了一个“严重问题”。价值在于它把 agent 的一句自我总结，拆成了可检查的状态变化。用户、reviewer、CI、另一个 agent 都可以基于同一份事实继续工作。
+
+这听起来没那么“智能”，但这是重点。
+
+如果 agent 自己已经能写总结，那么基础设施不应该抢着再写一个更花哨的总结。基础设施应该提供 agent 自己补不出来的事实：它启动过哪些进程、碰过哪些文件、连过哪些地方、哪些状态变化发生在它的叙事之外。
+
+当然，AgentSight 也不应该被描述成万能保护层。它现在更适合 Linux/eBPF、本地或 CI/runner 环境；eBPF probes 需要权限，虽然 agent 进程仍然可以按普通用户运行；TLS capture 受二进制、SSL 实现和运行环境影响；捕获到的数据也必须严肃处理隐私、redaction 和最小化。
+
+但这正是一个系统工具该有的边界感：先把可观察的事实做好，再让人、CI、review agent 或研究者基于事实做判断。
+
 ## 这也不是万能答案
 
 只观察世界时间线也不够。
@@ -360,8 +473,9 @@ Academic and research papers:
 - [Prompt Injection Attacks on Agentic Coding Assistants](https://arxiv.org/abs/2601.17548)
 - [Skill-Inject](https://arxiv.org/abs/2602.20156)
 
-Official docs and standards:
+Project reference, official docs, and standards:
 
+- [AgentSight repository](https://github.com/eunomia-bpf/agentsight)
 - [Claude Code auto mode: a safer way to skip permissions](https://www.anthropic.com/engineering/claude-code-auto-mode)
 - [Claude Code permission modes](https://code.claude.com/docs/en/permission-modes)
 - [Claude Code user FAQ](https://support.claude.com/en/articles/14554922-claude-code-user-faq)
