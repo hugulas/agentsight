@@ -111,10 +111,6 @@ impl Analyzer for AuthHeaderRemover {
 
         Ok(Box::pin(processed_stream))
     }
-
-    fn name(&self) -> &str {
-        "AuthHeaderRemover"
-    }
 }
 
 #[cfg(test)]

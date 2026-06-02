@@ -699,10 +699,6 @@ impl Analyzer for SSEProcessor {
 
         Ok(Box::pin(processed_stream))
     }
-
-    fn name(&self) -> &str {
-        "SSEProcessor"
-    }
 }
 
 fn extract_json_object_after_key<'a>(text: &'a str, key: &str) -> Option<&'a str> {

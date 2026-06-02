@@ -183,14 +183,6 @@ impl Runner for FakeRunner {
         self.analyzers.push(analyzer);
         self
     }
-
-    fn name(&self) -> &str {
-        "fake"
-    }
-
-    fn id(&self) -> String {
-        "fake".to_string()
-    }
 }
 
 #[cfg(test)]
@@ -506,10 +498,6 @@ mod tests {
 
                 Ok(Box::pin(processed_stream))
             }
-
-            fn name(&self) -> &str {
-                "MemoryTrackingAnalyzer"
-            }
         }
 
         let memory_tracker = MemoryTrackingAnalyzer::new();
@@ -542,20 +530,6 @@ mod tests {
             max_events_seen <= 10,
             "Should not accumulate more than 10 events due to cleanup"
         );
-    }
-
-    #[test]
-    fn test_fake_runner_builder_pattern() {
-        // Test the fluent builder pattern
-        let runner = FakeRunner::new()
-            .event_count(10)
-            .delay_ms(50)
-            .add_analyzer(Box::new(OutputAnalyzer::new()));
-
-        assert_eq!(runner.id(), "fake");
-        // Note: event_count and delay_ms are private fields, so we can't test them directly
-        // But we can verify the runner was created successfully and has the right ID
-        assert_eq!(runner.name(), "fake");
     }
 
     #[tokio::test]

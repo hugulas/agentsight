@@ -46,10 +46,6 @@ impl Analyzer for ErrorSimulatorAnalyzer {
 
         Ok(Box::pin(processed_stream))
     }
-
-    fn name(&self) -> &str {
-        "ErrorSimulatorAnalyzer"
-    }
 }
 
 /// Custom test analyzer that filters events
@@ -85,10 +81,6 @@ impl Analyzer for FilterAnalyzer {
 
         Ok(Box::pin(filtered_stream))
     }
-
-    fn name(&self) -> &str {
-        "FilterAnalyzer"
-    }
 }
 
 /// Custom test analyzer that adds metadata
@@ -114,10 +106,6 @@ impl Analyzer for MetadataEnricherAnalyzer {
         });
 
         Ok(Box::pin(enriched_stream))
-    }
-
-    fn name(&self) -> &str {
-        "MetadataEnricherAnalyzer"
     }
 }
 
@@ -298,10 +286,6 @@ async fn test_analyzer_chain_streaming_behavior() {
 
             Ok(Box::pin(recorded_stream))
         }
-
-        fn name(&self) -> &str {
-            "TimestampRecorderAnalyzer"
-        }
     }
 
     let timestamps_clone = Arc::clone(&event_timestamps);
@@ -364,10 +348,6 @@ async fn test_analyzer_chain_backpressure_handling() {
             });
 
             Ok(Box::pin(slow_stream))
-        }
-
-        fn name(&self) -> &str {
-            "SlowAnalyzer"
         }
     }
 
@@ -437,10 +417,6 @@ async fn test_analyzer_chain_resource_cleanup() {
             });
 
             Ok(Box::pin(processed_stream))
-        }
-
-        fn name(&self) -> &str {
-            "ResourceTrackingAnalyzer"
         }
     }
 

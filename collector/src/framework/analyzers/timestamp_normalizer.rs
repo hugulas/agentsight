@@ -45,10 +45,6 @@ impl Analyzer for TimestampNormalizer {
 
         Ok(Box::pin(normalized_stream))
     }
-
-    fn name(&self) -> &str {
-        "TimestampNormalizer"
-    }
 }
 
 #[cfg(test)]

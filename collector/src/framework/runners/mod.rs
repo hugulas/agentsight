@@ -22,37 +22,6 @@ pub trait Runner: Send + Sync {
     fn add_analyzer(self, analyzer: Box<dyn crate::framework::analyzers::Analyzer>) -> Self
     where
         Self: Sized;
-
-    /// Get the name of this runner
-    #[allow(dead_code)]
-    fn name(&self) -> &str;
-
-    /// Get a unique identifier for this runner instance
-    #[allow(dead_code)]
-    fn id(&self) -> String;
-}
-
-/// Configuration for SSL/TLS monitoring (only exercised by builder/tests).
-#[cfg(test)]
-#[derive(Debug, Clone, Default)]
-pub struct SslConfig {
-    pub tls_version: Option<String>,
-}
-
-/// Configuration for process monitoring (only exercised by builder/tests).
-#[cfg(test)]
-#[derive(Debug, Clone, Default)]
-pub struct ProcessConfig {
-    pub pid: Option<u32>,
-}
-
-/// Configuration for stdio payload monitoring
-#[derive(Debug, Clone, Default)]
-pub struct StdioConfig {
-    pub pid: Option<u32>,
-    pub uid: Option<u32>,
-    pub all_fds: bool,
-    pub max_bytes: Option<u32>,
 }
 
 pub mod agent; // Add agent runner for flexible composition

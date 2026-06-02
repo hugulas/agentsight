@@ -411,10 +411,6 @@ impl Analyzer for OtelExporter {
 
         Ok(Box::pin(processed))
     }
-
-    fn name(&self) -> &str {
-        "OtelExporter"
-    }
 }
 
 /// POST an OTLP/HTTP JSON trace payload to the collector.

@@ -444,10 +444,6 @@ impl Analyzer for HTTPFilter {
 
         Ok(Box::pin(filtered_stream))
     }
-
-    fn name(&self) -> &str {
-        "HTTPFilter"
-    }
 }
 
 #[cfg(test)]

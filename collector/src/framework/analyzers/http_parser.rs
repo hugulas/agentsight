@@ -711,10 +711,6 @@ impl Analyzer for HTTPParser {
 
         Ok(Box::pin(processed_stream))
     }
-
-    fn name(&self) -> &str {
-        "HTTPParser"
-    }
 }
 
 #[cfg(test)]

@@ -125,7 +125,6 @@ pub(crate) async fn run_exec(
     // Same optimized filters as the `record` command.
     let db_path_for_adapters = db_path.clone();
     let cfg = TraceConfig {
-        name: "exec",
         ssl: true,
         comm: Some(comm.clone()),
         ssl_filter: vec!["data=0\\r\\n\\r\\n".to_string()],

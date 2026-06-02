@@ -416,10 +416,6 @@ impl Analyzer for SSLFilter {
 
         Ok(Box::pin(filtered_stream))
     }
-
-    fn name(&self) -> &str {
-        "SSLFilter"
-    }
 }
 
 impl Drop for SSLFilter {

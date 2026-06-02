@@ -40,8 +40,4 @@ impl Analyzer for StorageAnalyzer {
 
         Ok(Box::pin(processed))
     }
-
-    fn name(&self) -> &str {
-        "StorageAnalyzer"
-    }
 }

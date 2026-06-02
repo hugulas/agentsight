@@ -38,8 +38,6 @@ pub(crate) struct OtelConfig {
 /// fill in only the fields they care about.
 #[derive(Default)]
 pub(crate) struct TraceConfig {
-    /// Runner-set name passed to `AgentRunner::new` ("trace" or "exec").
-    pub(crate) name: &'static str,
     pub(crate) ssl: bool,
     pub(crate) pid: Option<u32>,
     pub(crate) ssl_uid: Option<u32>,
@@ -118,7 +116,6 @@ pub(crate) fn build_trace_agent(
     cfg: &TraceConfig,
 ) -> Result<AgentRunner, RunnerError> {
     // Bind config fields to the local names the body below uses.
-    let name = cfg.name;
     let ssl_enabled = cfg.ssl;
     let pid = cfg.pid;
     let ssl_uid = cfg.ssl_uid;
@@ -147,7 +144,7 @@ pub(crate) fn build_trace_agent(
     let rotate_logs = cfg.rotate_logs;
     let max_log_size = cfg.max_log_size;
 
-    let mut agent = AgentRunner::new(name);
+    let mut agent = AgentRunner::new();
 
     // Add SSL runner if enabled
     if ssl_enabled {

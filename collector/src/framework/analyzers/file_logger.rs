@@ -246,10 +246,6 @@ impl Analyzer for FileLogger {
 
         Ok(Box::pin(processed_stream))
     }
-
-    fn name(&self) -> &str {
-        "FileLogger"
-    }
 }
 
 #[cfg(test)]
@@ -259,20 +255,6 @@ mod tests {
     use futures::stream;
     use serde_json::json;
     use tempfile::NamedTempFile;
-
-    #[tokio::test]
-    async fn test_file_logger_creation() {
-        let temp_file = NamedTempFile::new().unwrap();
-        let logger = FileLogger::new(temp_file.path()).unwrap();
-        assert_eq!(logger.name(), "FileLogger");
-    }
-
-    #[tokio::test]
-    async fn test_file_logger_with_options() {
-        let temp_file = NamedTempFile::new().unwrap();
-        let logger = FileLogger::new(temp_file.path()).unwrap();
-        assert_eq!(logger.name(), "FileLogger");
-    }
 
     #[tokio::test]
     async fn test_file_logger_processes_events() {
@@ -353,7 +335,6 @@ mod tests {
         };
 
         let logger = FileLogger::with_rotation(&log_path, config).unwrap();
-        assert_eq!(logger.name(), "FileLogger");
         assert!(logger.rotation_config.is_some());
     }
 
@@ -363,7 +344,6 @@ mod tests {
         let log_path = temp_dir.path().join("test.log");
 
         let logger = FileLogger::with_max_size(&log_path, 5).unwrap(); // 5MB
-        assert_eq!(logger.name(), "FileLogger");
         assert!(logger.rotation_config.is_some());
         assert_eq!(
             logger.rotation_config.as_ref().unwrap().max_file_size,

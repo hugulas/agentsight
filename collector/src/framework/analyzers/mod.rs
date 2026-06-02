@@ -12,10 +12,6 @@ pub type AnalyzerError = Box<dyn std::error::Error + Send + Sync>;
 pub trait Analyzer: Send + Sync {
     /// Process an event stream and return a processed stream
     async fn process(&mut self, stream: EventStream) -> Result<EventStream, AnalyzerError>;
-
-    /// Get the name of this analyzer
-    #[allow(dead_code)]
-    fn name(&self) -> &str;
 }
 
 pub mod auth_header_remover;

@@ -792,7 +792,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             // Predefined filter patterns optimized for agent monitoring. Enables
             // SSL + process + system monitoring and the web server by default.
             let cfg = TraceConfig {
-                name: "trace",
                 ssl: true,
                 pid: *pid,
                 comm: comm.clone(),
@@ -940,7 +939,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 server_port,
             } => {
                 let cfg = TraceConfig {
-                    name: "trace",
                     ssl: *ssl,
                     pid: *pid,
                     ssl_uid: *ssl_uid,

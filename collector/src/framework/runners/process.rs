@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-#[cfg(test)]
-use super::ProcessConfig;
 use super::common::{AnalyzerProcessor, BinaryExecutor};
 use super::{EventStream, Runner, RunnerError};
 use crate::framework::analyzers::Analyzer;
@@ -13,9 +11,6 @@ use std::path::Path;
 
 /// Runner for collecting process/system events
 pub struct ProcessRunner {
-    // Config is only exercised by the builder/tests; excluded from prod builds.
-    #[cfg(test)]
-    config: ProcessConfig,
     analyzers: Vec<Box<dyn Analyzer>>,
     executor: BinaryExecutor,
     additional_args: Vec<String>,
@@ -26,8 +21,6 @@ impl ProcessRunner {
     pub fn from_binary_extractor(binary_path: impl AsRef<Path>) -> Self {
         let path_str = binary_path.as_ref().to_string_lossy().to_string();
         Self {
-            #[cfg(test)]
-            config: ProcessConfig::default(),
             analyzers: Vec::new(),
             executor: BinaryExecutor::new(path_str).with_runner_name("Process".to_string()),
             additional_args: Vec::new(),
@@ -46,13 +39,6 @@ impl ProcessRunner {
             .executor
             .with_args(&self.additional_args)
             .with_runner_name("Process".to_string());
-        self
-    }
-
-    /// Set the PID to monitor
-    #[cfg(test)]
-    pub fn pid(mut self, pid: u32) -> Self {
-        self.config.pid = Some(pid);
         self
     }
 }
@@ -103,35 +89,11 @@ impl Runner for ProcessRunner {
         self.analyzers.push(analyzer);
         self
     }
-
-    fn name(&self) -> &str {
-        "process"
-    }
-
-    fn id(&self) -> String {
-        "process".to_string()
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_process_runner_creation() {
-        let runner = ProcessRunner::from_binary_extractor("/fake/path/process");
-        assert_eq!(runner.name(), "process");
-        assert_eq!(runner.id(), "process");
-        assert_eq!(runner.config.pid, None);
-    }
-
-    #[test]
-    fn test_process_runner_with_custom_config() {
-        let runner = ProcessRunner::from_binary_extractor("/fake/path/process").pid(1234);
-
-        assert_eq!(runner.id(), "process");
-        assert_eq!(runner.config.pid, Some(1234));
-    }
 
     /// Test that actually runs the real process binary
     ///

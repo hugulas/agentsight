@@ -14,8 +14,8 @@ pub struct AgentRunner {
 }
 
 impl AgentRunner {
-    /// Create a new AgentRunner with the given name
-    pub fn new(_name: impl Into<String>) -> Self {
+    /// Create a new AgentRunner
+    pub fn new() -> Self {
         Self {
             runners: Vec::new(),
             analyzers: Vec::new(),
@@ -78,14 +78,6 @@ impl Runner for AgentRunner {
         self.analyzers.push(analyzer);
         self
     }
-
-    fn name(&self) -> &str {
-        "AgentRunner"
-    }
-
-    fn id(&self) -> String {
-        "agent-runner".to_string()
-    }
 }
 
 #[cfg(test)]
@@ -110,7 +102,7 @@ mod tests {
             .delay_ms(15)
             .add_analyzer(Box::new(OutputAnalyzer::new()));
 
-        let mut agent = AgentRunner::new("test-agent")
+        let mut agent = AgentRunner::new()
             .add_runner(Box::new(fake_runner1))
             .add_runner(Box::new(fake_runner2));
 
@@ -135,7 +127,7 @@ mod tests {
 
         let fake_runner = FakeRunner::new().event_count(2).delay_ms(10);
 
-        let mut agent = AgentRunner::new("test-with-analyzers")
+        let mut agent = AgentRunner::new()
             .add_runner(Box::new(fake_runner))
             .add_global_analyzer(Box::new(FileLogger::new(temp_file.path()).unwrap()))
             .add_global_analyzer(Box::new(OutputAnalyzer::new()));
@@ -166,7 +158,7 @@ mod tests {
             .delay_ms(10)
             .add_analyzer(Box::new(HTTPParser::new()));
 
-        let mut agent = AgentRunner::new("complex-agent")
+        let mut agent = AgentRunner::new()
             .add_runner(Box::new(fake_runner1))
             .add_runner(Box::new(fake_runner2))
             .add_global_analyzer(Box::new(OutputAnalyzer::new()));
@@ -187,7 +179,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_agent_runner_empty_runners() {
-        let mut agent = AgentRunner::new("empty-agent");
+        let mut agent = AgentRunner::new();
 
         assert_eq!(agent.runner_count(), 0);
 
@@ -239,15 +231,11 @@ mod tests {
                 });
                 Ok(Box::pin(recorded_stream))
             }
-
-            fn name(&self) -> &str {
-                "TimestampRecorder"
-            }
         }
 
         let fake_runner = FakeRunner::new().event_count(3).delay_ms(50); // Longer delay to ensure streaming behavior
 
-        let mut agent = AgentRunner::new("streaming-test")
+        let mut agent = AgentRunner::new()
             .add_runner(Box::new(fake_runner))
             .add_global_analyzer(Box::new(TimestampRecorder::new(Arc::clone(
                 &event_timestamps,
@@ -289,8 +277,7 @@ mod tests {
                     .delay_ms(10)
                     .add_analyzer(Box::new(OutputAnalyzer::new()));
 
-                let mut agent = AgentRunner::new(format!("concurrent-agent-{}", i))
-                    .add_runner(Box::new(fake_runner));
+                let mut agent = AgentRunner::new().add_runner(Box::new(fake_runner));
 
                 let stream = agent.run().await.unwrap();
                 let events: Vec<_> = stream.collect().await;
@@ -333,17 +320,9 @@ mod tests {
             fn add_analyzer(self, _analyzer: Box<dyn Analyzer>) -> Self {
                 self
             }
-
-            fn name(&self) -> &str {
-                "FailingRunner"
-            }
-
-            fn id(&self) -> String {
-                "failing-runner".to_string()
-            }
         }
 
-        let mut agent = AgentRunner::new("error-test").add_runner(Box::new(FailingRunner));
+        let mut agent = AgentRunner::new().add_runner(Box::new(FailingRunner));
 
         let result = agent.run().await;
         assert!(result.is_err(), "Should propagate runner error");
@@ -362,7 +341,7 @@ mod tests {
         // Test agent runner with timeout to ensure it doesn't hang
         let fake_runner = FakeRunner::new().event_count(5).delay_ms(10);
 
-        let mut agent = AgentRunner::new("timeout-test")
+        let mut agent = AgentRunner::new()
             .add_runner(Box::new(fake_runner))
             .add_global_analyzer(Box::new(OutputAnalyzer::new()));
 
@@ -382,20 +361,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_agent_runner_name_and_id() {
-        let agent = AgentRunner::new("my-test-agent");
-
-        assert_eq!(agent.name(), "AgentRunner");
-        assert_eq!(agent.id(), "agent-runner");
-    }
-
-    #[tokio::test]
     async fn test_agent_runner_fluent_interface() {
         // Test that the fluent interface works correctly
         let fake_runner1 = FakeRunner::new().event_count(1).delay_ms(10);
         let fake_runner2 = FakeRunner::new().event_count(1).delay_ms(10);
 
-        let agent = AgentRunner::new("fluent-test")
+        let agent = AgentRunner::new()
             .add_runner(Box::new(fake_runner1))
             .add_runner(Box::new(fake_runner2))
             .add_global_analyzer(Box::new(OutputAnalyzer::new()))

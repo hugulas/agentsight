@@ -123,14 +123,6 @@ impl Runner for SystemRunner {
         self.analyzers.push(analyzer);
         self
     }
-
-    fn name(&self) -> &str {
-        "system"
-    }
-
-    fn id(&self) -> String {
-        "system".to_string()
-    }
 }
 
 /// Get nanoseconds since boot (matching bpf_ktime_get_ns() behavior)
@@ -532,8 +524,6 @@ mod tests {
     #[test]
     fn test_system_runner_creation() {
         let runner = SystemRunner::new();
-        assert_eq!(runner.name(), "system");
-        assert_eq!(runner.id(), "system");
         assert_eq!(runner.config.interval_secs, 10);
     }
 

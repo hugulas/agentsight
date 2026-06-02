@@ -69,10 +69,6 @@ impl Analyzer for OutputAnalyzer {
 
         Ok(Box::pin(processed_stream))
     }
-
-    fn name(&self) -> &str {
-        "output"
-    }
 }
 
 #[cfg(test)]
@@ -109,12 +105,6 @@ mod tests {
         assert_eq!(collected.len(), 2);
         assert_eq!(collected[0].data, json!({"data": 1}));
         assert_eq!(collected[1].data, json!({"data": 2}));
-    }
-
-    #[tokio::test]
-    async fn test_output_analyzer_name() {
-        let analyzer = OutputAnalyzer::new();
-        assert_eq!(analyzer.name(), "output");
     }
 
     #[tokio::test]
