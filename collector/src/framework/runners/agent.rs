@@ -83,7 +83,7 @@ impl Runner for AgentRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::framework::analyzers::{FileLogger, HTTPParser, OutputAnalyzer, SSEProcessor};
+    use crate::framework::analyzers::{FileLogger, HTTPParser, SSEProcessor};
     use crate::framework::runners::FakeRunner;
     use futures::stream::StreamExt;
     use std::time::Duration;
@@ -92,15 +92,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_agent_runner_basic_composition() {
-        let fake_runner1 = FakeRunner::new()
-            .event_count(2)
-            .delay_ms(10)
-            .add_analyzer(Box::new(OutputAnalyzer::new()));
+        let fake_runner1 = FakeRunner::new().event_count(2).delay_ms(10);
 
-        let fake_runner2 = FakeRunner::new()
-            .event_count(3)
-            .delay_ms(15)
-            .add_analyzer(Box::new(OutputAnalyzer::new()));
+        let fake_runner2 = FakeRunner::new().event_count(3).delay_ms(15);
 
         let mut agent = AgentRunner::new()
             .add_runner(Box::new(fake_runner1))
@@ -129,11 +123,10 @@ mod tests {
 
         let mut agent = AgentRunner::new()
             .add_runner(Box::new(fake_runner))
-            .add_global_analyzer(Box::new(FileLogger::new(temp_file.path()).unwrap()))
-            .add_global_analyzer(Box::new(OutputAnalyzer::new()));
+            .add_global_analyzer(Box::new(FileLogger::new(temp_file.path()).unwrap()));
 
         assert_eq!(agent.runner_count(), 1);
-        assert_eq!(agent.analyzer_count(), 2);
+        assert_eq!(agent.analyzer_count(), 1);
 
         let stream = agent.run().await.unwrap();
         let events: Vec<_> = stream.collect().await;
@@ -160,8 +153,7 @@ mod tests {
 
         let mut agent = AgentRunner::new()
             .add_runner(Box::new(fake_runner1))
-            .add_runner(Box::new(fake_runner2))
-            .add_global_analyzer(Box::new(OutputAnalyzer::new()));
+            .add_runner(Box::new(fake_runner2));
 
         let stream = agent.run().await.unwrap();
         let events: Vec<_> = stream.collect().await;
@@ -239,8 +231,7 @@ mod tests {
             .add_runner(Box::new(fake_runner))
             .add_global_analyzer(Box::new(TimestampRecorder::new(Arc::clone(
                 &event_timestamps,
-            ))))
-            .add_global_analyzer(Box::new(OutputAnalyzer::new()));
+            ))));
 
         let start_time = Instant::now();
         let stream = agent.run().await.unwrap();
@@ -272,10 +263,7 @@ mod tests {
 
         for i in 0..3 {
             let handle = tokio::spawn(async move {
-                let fake_runner = FakeRunner::new()
-                    .event_count(2)
-                    .delay_ms(10)
-                    .add_analyzer(Box::new(OutputAnalyzer::new()));
+                let fake_runner = FakeRunner::new().event_count(2).delay_ms(10);
 
                 let mut agent = AgentRunner::new().add_runner(Box::new(fake_runner));
 
@@ -341,9 +329,7 @@ mod tests {
         // Test agent runner with timeout to ensure it doesn't hang
         let fake_runner = FakeRunner::new().event_count(5).delay_ms(10);
 
-        let mut agent = AgentRunner::new()
-            .add_runner(Box::new(fake_runner))
-            .add_global_analyzer(Box::new(OutputAnalyzer::new()));
+        let mut agent = AgentRunner::new().add_runner(Box::new(fake_runner));
 
         let result = timeout(Duration::from_secs(5), async {
             let stream = agent.run().await.unwrap();
@@ -365,12 +351,14 @@ mod tests {
         // Test that the fluent interface works correctly
         let fake_runner1 = FakeRunner::new().event_count(1).delay_ms(10);
         let fake_runner2 = FakeRunner::new().event_count(1).delay_ms(10);
+        let temp_file1 = NamedTempFile::new().unwrap();
+        let temp_file2 = NamedTempFile::new().unwrap();
 
         let agent = AgentRunner::new()
             .add_runner(Box::new(fake_runner1))
             .add_runner(Box::new(fake_runner2))
-            .add_global_analyzer(Box::new(OutputAnalyzer::new()))
-            .add_analyzer(Box::new(OutputAnalyzer::new())); // Test inherited add_analyzer
+            .add_global_analyzer(Box::new(FileLogger::new(temp_file1.path()).unwrap()))
+            .add_analyzer(Box::new(FileLogger::new(temp_file2.path()).unwrap()));
 
         assert_eq!(agent.runner_count(), 2);
         assert_eq!(agent.analyzer_count(), 2); // Both global analyzers should be present

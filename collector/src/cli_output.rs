@@ -7,6 +7,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::framework::adapters::sql_adapter::SqlAdapter;
+use crate::framework::analyzers::common;
+use crate::framework::core::Event;
 use crate::framework::storage::sqlite::{AuditRow, LlmCallRow, TokenSummary};
 
 #[derive(Debug, Default, Serialize)]
@@ -42,12 +44,14 @@ pub(crate) type TopSection = (&'static str, &'static str, Vec<(String, i64)>);
 
 #[derive(Debug, Clone)]
 pub(crate) struct AgentTopRow {
+    pub(crate) session: String,
     pub(crate) agent: String,
     pub(crate) pid: Option<u32>,
     pub(crate) cpu_percent: f64,
     pub(crate) rss_mb: u64,
     pub(crate) processes: usize,
     pub(crate) tokens: Option<i64>,
+    pub(crate) tools: usize,
     pub(crate) execs: usize,
     pub(crate) failures: usize,
     pub(crate) files: usize,
@@ -84,6 +88,25 @@ pub(crate) struct SessionSummary {
 pub(crate) fn print_json<T: Serialize>(value: &T) -> Result<(), serde_json::Error> {
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
+}
+
+pub(crate) fn print_event_json(event: &Event) {
+    let mut value = serde_json::to_value(event).unwrap_or_else(|e| {
+        serde_json::json!({"source":"diagnostic","data":{"error": format!("failed to serialize event: {}", e)}})
+    });
+    if let Some(data_obj) = value.get_mut("data")
+        && let Some(data_field) = data_obj.get_mut("data")
+    {
+        *data_field = Value::String(common::data_to_string(data_field));
+    }
+
+    println!(
+        "{}",
+        serde_json::to_string(&value)
+            .unwrap_or_else(|e| format!("{{\"error\":\"failed to render event: {}\"}}", e))
+    );
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
 }
 
 pub(crate) fn clear_screen() {
@@ -227,7 +250,7 @@ pub(crate) fn print_agent_top(top: &AgentTopOutput<'_>) {
     let generated_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
     let db = top.db.map(|db| format!(" · {db}")).unwrap_or_default();
     println!(
-        "AgentSight top - {} agents   {}   {}{db}   {:.0}s   events: {}   LLM: {}   tokens: {}",
+        "AgentSight top - {} sessions   {}   {}{db}   {:.0}s   events: {}   LLM: {}   tokens: {}",
         top.rows.len(),
         top.mode,
         generated_at,
@@ -238,13 +261,15 @@ pub(crate) fn print_agent_top(top: &AgentTopOutput<'_>) {
     );
     println!();
     println!(
-        "{:<14} {:>7} {:>6} {:>7} {:>5} {:>8} {:>6} {:>5} {:>5} {:>4} {:>6} {:<10} COMMAND",
+        "{:<18} {:<10} {:>7} {:>6} {:>7} {:>5} {:>8} {:>5} {:>6} {:>5} {:>5} {:>4} {:>6} {:<10} COMMAND",
+        "SESSION",
         "AGENT",
         "PID",
         "CPU%",
         "RSS",
         "PROCS",
         "TOKENS",
+        "TOOLS",
         "EXECS",
         "FAIL",
         "FILES",
@@ -254,8 +279,9 @@ pub(crate) fn print_agent_top(top: &AgentTopOutput<'_>) {
     );
     for row in &top.rows {
         println!(
-            "{:<14} {:>7} {:>6.1} {:>7} {:>5} {:>8} {:>6} {:>5} {:>5} {:>4} {:>6} {:<10} {}",
-            truncate(&row.agent, 14),
+            "{:<18} {:<10} {:>7} {:>6.1} {:>7} {:>5} {:>8} {:>5} {:>6} {:>5} {:>5} {:>4} {:>6} {:<10} {}",
+            truncate(&row.session, 18),
+            truncate(&row.agent, 10),
             row.pid
                 .map(|pid| pid.to_string())
                 .unwrap_or_else(|| "-".to_string()),
@@ -265,6 +291,7 @@ pub(crate) fn print_agent_top(top: &AgentTopOutput<'_>) {
             row.tokens
                 .map(format_count)
                 .unwrap_or_else(|| "-".to_string()),
+            row.tools,
             row.execs,
             row.failures,
             row.files,
@@ -276,8 +303,8 @@ pub(crate) fn print_agent_top(top: &AgentTopOutput<'_>) {
     }
     if top.rows.is_empty() {
         println!(
-            "{:<14} {:>7} {:>6} {:>7} {:>5} {:>8} {:>6} {:>5} {:>5} {:>4} {:>6} {:<10} -",
-            "-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-"
+            "{:<18} {:<10} {:>7} {:>6} {:>7} {:>5} {:>8} {:>5} {:>6} {:>5} {:>5} {:>4} {:>6} {:<10} -",
+            "-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-"
         );
     }
     println!();

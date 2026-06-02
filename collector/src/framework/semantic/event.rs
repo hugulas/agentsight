@@ -148,6 +148,7 @@ pub fn normalize_event(
                 })
         })
         .map(String::from);
+    let request_id = extract_request_id(data);
 
     let message_type = data.get("message_type").and_then(|v| v.as_str());
     let provider = host.as_deref().map(provider_from_host);
@@ -246,10 +247,7 @@ pub fn normalize_event(
         status_code,
         provider,
         model,
-        request_id: data
-            .get("request_id")
-            .and_then(|v| v.as_str())
-            .map(String::from),
+        request_id,
         trace_id: None,
         session_id: None,
         conversation_id: None,
@@ -259,6 +257,39 @@ pub fn normalize_event(
         confidence: Some(0.75),
         attributes: data.clone(),
     }
+}
+
+fn extract_request_id(data: &Value) -> Option<String> {
+    let direct = data
+        .get("request_id")
+        .or_else(|| data.get("requestId"))
+        .or_else(|| data.get("requestID"))
+        .and_then(|v| v.as_str());
+    if let Some(id) = direct {
+        return Some(id.to_string());
+    }
+
+    let headers = data.get("headers")?.as_object()?;
+    [
+        "request-id",
+        "x-request-id",
+        "x-correlation-id",
+        "x-amzn-requestid",
+        "x-amzn-request-id",
+        "x-goog-request-id",
+        "x-openai-request-id",
+        "anthropic-request-id",
+    ]
+    .iter()
+    .find_map(|name| header_value(headers, name).map(String::from))
+}
+
+fn header_value<'a>(headers: &'a serde_json::Map<String, Value>, name: &str) -> Option<&'a str> {
+    headers.iter().find_map(|(key, value)| {
+        key.eq_ignore_ascii_case(name)
+            .then(|| value.as_str())
+            .flatten()
+    })
 }
 
 fn build_summary(

@@ -89,6 +89,9 @@ async fn setup_signal_handler() {
              while your agent runs as your normal user."
 )]
 struct Cli {
+    /// Web UI bind address when a command starts a server.
+    #[arg(long, default_value = cmd_trace::DEFAULT_SERVER_LISTEN, global = true)]
+    listen: String,
     #[command(subcommand)]
     command: Commands,
 }
@@ -132,7 +135,7 @@ enum Commands {
         #[arg(last = true)]
         command: Vec<String>,
     },
-    /// Show live agent process activity, or a saved session with --db.
+    /// Show live agent sessions, or a saved session with --db.
     Top {
         /// SQLite database path for saved session mode
         #[arg(long)]
@@ -744,6 +747,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 *rotate_logs,
                 *max_log_size,
                 !*no_server,
+                &cli.listen,
                 *server_port,
                 false,
             )
@@ -784,6 +788,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     *rotate_logs,
                     *max_log_size,
                     !*no_server,
+                    &cli.listen,
                     *server_port,
                     true,
                 )
@@ -835,6 +840,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 rotate_logs: *rotate_logs,
                 max_log_size: *max_log_size,
                 server: !*no_server,
+                server_listen: Some(cli.listen.clone()),
                 server_port: *server_port,
                 ..Default::default()
             };
@@ -873,6 +879,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 *rotate_logs,
                 *max_log_size,
                 *server,
+                &cli.listen,
                 *server_port,
                 log_file,
                 binary_path.as_deref(),
@@ -894,6 +901,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 *rotate_logs,
                 *max_log_size,
                 *server,
+                &cli.listen,
                 *server_port,
                 log_file,
                 args,
@@ -923,6 +931,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 *rotate_logs,
                 *max_log_size,
                 *server,
+                &cli.listen,
                 *server_port,
                 log_file,
             )
@@ -966,6 +975,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let cfg = TraceConfig {
                     ssl: *ssl,
                     pid: *pid,
+                    session_id: None,
                     ssl_uid: *ssl_uid,
                     comm: comm.clone(),
                     ssl_filter: ssl_filter.clone(),
@@ -996,6 +1006,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     rotate_logs: *rotate_logs,
                     max_log_size: *max_log_size,
                     server: *server,
+                    server_listen: Some(cli.listen.clone()),
                     server_port: *server_port,
                 };
                 run_trace(&binary_extractor, cfg)
@@ -1027,6 +1038,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 *rotate_logs,
                 *max_log_size,
                 *server,
+                &cli.listen,
                 *server_port,
             )
             .await

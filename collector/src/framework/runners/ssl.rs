@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-use super::common::{AnalyzerProcessor, BinaryExecutor};
+use super::common::{AnalyzerProcessor, BinaryExecutor, parse_error_event};
 use super::{EventStream, Runner, RunnerError};
 use crate::framework::analyzers::Analyzer;
 use crate::framework::core::Event;
 use async_trait::async_trait;
 use futures::stream::StreamExt;
 use std::path::Path;
+use std::sync::{Arc, atomic::AtomicU64};
 
 /// Runner for collecting SSL/TLS events
 pub struct SslRunner {
@@ -41,6 +42,28 @@ impl SslRunner {
             .with_runner_name("SSL".to_string());
         self
     }
+
+    fn parse_ssl_event(json_value: serde_json::Value, errors: &AtomicU64) -> Event {
+        let Some(timestamp) = json_value.get("timestamp_ns").and_then(|v| v.as_u64()) else {
+            return parse_error_event("ssl", json_value, "missing timestamp_ns", errors);
+        };
+        let Some(pid) = json_value
+            .get("pid")
+            .and_then(|v| v.as_u64())
+            .map(|p| p as u32)
+        else {
+            return parse_error_event("ssl", json_value, "missing pid", errors);
+        };
+        let Some(comm) = json_value
+            .get("comm")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+        else {
+            return parse_error_event("ssl", json_value, "missing comm", errors);
+        };
+
+        Event::new_with_timestamp(timestamp, "ssl".to_string(), pid, comm, json_value)
+    }
 }
 
 #[async_trait]
@@ -49,42 +72,9 @@ impl Runner for SslRunner {
         // Get raw JSON stream from the binary executor
         let json_stream = self.executor.get_json_stream().await?;
 
-        // Convert JSON values directly to framework Events
-        let event_stream = json_stream.map(|json_value| {
-            // Extract timestamp if available, otherwise panic
-            let timestamp = json_value
-                .get("timestamp_ns")
-                .and_then(|v| v.as_u64())
-                .unwrap_or_else(|| {
-                    panic!("Missing timestamp_ns field in ssl event: {}", json_value);
-                });
-
-            // Extract pid - panic if not found
-            let pid = json_value
-                .get("pid")
-                .and_then(|v| v.as_u64())
-                .map(|p| p as u32)
-                .unwrap_or_else(|| {
-                    panic!("Missing pid field in ssl event: {}", json_value);
-                });
-
-            // Extract comm - panic if not found
-            let comm = json_value
-                .get("comm")
-                .and_then(|v| v.as_str())
-                .unwrap_or_else(|| {
-                    panic!("Missing comm field in ssl event: {}", json_value);
-                })
-                .to_string();
-
-            Event::new_with_timestamp(
-                timestamp,
-                "ssl".to_string(), // source is runner name
-                pid,
-                comm,
-                json_value,
-            )
-        });
+        let errors = Arc::new(AtomicU64::new(0));
+        let event_stream =
+            json_stream.map(move |json_value| Self::parse_ssl_event(json_value, &errors));
 
         AnalyzerProcessor::process_through_analyzers(Box::pin(event_stream), &mut self.analyzers)
             .await
@@ -134,8 +124,7 @@ mod tests {
         }
 
         // Create runner with real binary
-        let mut runner = SslRunner::from_binary_extractor(binary_path)
-            .add_analyzer(Box::new(crate::framework::analyzers::OutputAnalyzer::new()));
+        let mut runner = SslRunner::from_binary_extractor(binary_path);
 
         // Run the binary and collect events for 30 seconds
         if let Ok(mut stream) = runner.run().await {

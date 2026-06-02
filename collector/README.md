@@ -187,13 +187,11 @@ Runners execute eBPF programs and create event streams:
 // SSL Runner
 let ssl_runner = SslRunner::from_binary_extractor(binary_path)
     .with_args(&["--port", "443"])
-    .add_analyzer(Box::new(HTTPParser::new()))
-    .add_analyzer(Box::new(OutputAnalyzer::new()));
+    .add_analyzer(Box::new(HTTPParser::new()));
 
 // Process Runner
 let process_runner = ProcessRunner::from_binary_extractor(binary_path)
-    .with_args(&["--comm", "python"])
-    .add_analyzer(Box::new(OutputAnalyzer::new()));
+    .with_args(&["--comm", "python"]);
 
 // Agent Runner (combines SSL + Process)
 let agent_runner = AgentRunner::new("agent")
@@ -211,7 +209,8 @@ Analyzers process event streams in configurable chains:
 - **HTTPFilter**: Filters HTTP events by patterns
 - **SSLFilter**: Filters SSL events by patterns
 - **FileLogger**: Logs events to files
-- **OutputAnalyzer**: Outputs events to console
+
+Console output is rendered by the CLI after the runner/analyzer pipeline returns events.
 
 ### Event Format
 

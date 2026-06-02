@@ -7,8 +7,7 @@ use crate::cmd_trace::{
 };
 use crate::framework::{
     analyzers::{
-        AuthHeaderRemover, HTTPFilter, HTTPParser, OutputAnalyzer, SSEProcessor, SSLFilter,
-        TimestampNormalizer,
+        AuthHeaderRemover, HTTPFilter, HTTPParser, SSEProcessor, SSLFilter, TimestampNormalizer,
     },
     binary_extractor::BinaryExtractor,
     runners::{ProcessRunner, Runner, RunnerError, SslRunner, StdioRunner, SystemRunner},
@@ -27,6 +26,7 @@ pub(crate) async fn run_raw_ssl(
     rotate_logs: bool,
     max_log_size: u64,
     enable_server: bool,
+    server_listen: &str,
     server_port: u16,
     log_file: &str,
     binary_path: Option<&str>,
@@ -103,17 +103,14 @@ pub(crate) async fn run_raw_ssl(
         max_log_size,
     )?));
 
-    if !quiet {
-        ssl_runner = ssl_runner.add_analyzer(Box::new(OutputAnalyzer::new()));
-    }
-
     // Start web server if enabled
-    let _server_handle = start_web_server_if_enabled(enable_server, server_port, log_file, None)
-        .await
-        .map_err(|e| RunnerError::from(format!("Failed to start server: {}", e)))?;
+    let _server_handle =
+        start_web_server_if_enabled(enable_server, server_listen, server_port, log_file, None)
+            .await
+            .map_err(|e| RunnerError::from(format!("Failed to start server: {}", e)))?;
 
     let mut stream = ssl_runner.run().await?;
-    drive_stream_until_shutdown(&mut stream).await;
+    drive_stream_until_shutdown(&mut stream, !quiet).await;
 
     Ok(())
 }
@@ -125,6 +122,7 @@ pub(crate) async fn run_raw_process(
     rotate_logs: bool,
     max_log_size: u64,
     enable_server: bool,
+    server_listen: &str,
     server_port: u16,
     log_file: &str,
     args: &Vec<String>,
@@ -143,10 +141,6 @@ pub(crate) async fn run_raw_process(
     // Add TimestampNormalizer first to convert nanoseconds since boot to milliseconds since epoch
     process_runner = process_runner.add_analyzer(Box::new(TimestampNormalizer::new()));
 
-    if !quiet {
-        process_runner = process_runner.add_analyzer(Box::new(OutputAnalyzer::new()));
-    }
-
     process_runner = process_runner.add_analyzer(Box::new(make_file_logger(
         log_file,
         rotate_logs,
@@ -154,13 +148,14 @@ pub(crate) async fn run_raw_process(
     )?));
 
     // Start web server if enabled
-    let _server_handle = start_web_server_if_enabled(enable_server, server_port, log_file, None)
-        .await
-        .map_err(|e| RunnerError::from(format!("Failed to start server: {}", e)))?;
+    let _server_handle =
+        start_web_server_if_enabled(enable_server, server_listen, server_port, log_file, None)
+            .await
+            .map_err(|e| RunnerError::from(format!("Failed to start server: {}", e)))?;
 
     println!("Starting process event stream with raw JSON output (press Ctrl+C to stop):");
     let mut stream = process_runner.run().await?;
-    drive_stream_until_shutdown(&mut stream).await;
+    drive_stream_until_shutdown(&mut stream, !quiet).await;
 
     Ok(())
 }
@@ -177,6 +172,7 @@ pub(crate) async fn run_raw_stdio(
     rotate_logs: bool,
     max_log_size: u64,
     enable_server: bool,
+    server_listen: &str,
     server_port: u16,
     log_file: &str,
 ) -> Result<(), RunnerError> {
@@ -192,10 +188,6 @@ pub(crate) async fn run_raw_stdio(
     // Add TimestampNormalizer first to convert nanoseconds since boot to milliseconds since epoch
     stdio_runner = stdio_runner.add_analyzer(Box::new(TimestampNormalizer::new()));
 
-    if !quiet {
-        stdio_runner = stdio_runner.add_analyzer(Box::new(OutputAnalyzer::new()));
-    }
-
     stdio_runner = stdio_runner.add_analyzer(Box::new(make_file_logger(
         log_file,
         rotate_logs,
@@ -203,16 +195,17 @@ pub(crate) async fn run_raw_stdio(
     )?));
 
     // Start web server if enabled
-    let _server_handle = start_web_server_if_enabled(enable_server, server_port, log_file, None)
-        .await
-        .map_err(|e| RunnerError::from(format!("Failed to start server: {}", e)))?;
+    let _server_handle =
+        start_web_server_if_enabled(enable_server, server_listen, server_port, log_file, None)
+            .await
+            .map_err(|e| RunnerError::from(format!("Failed to start server: {}", e)))?;
 
     println!(
         "Starting stdio event stream for PID {} (press Ctrl+C to stop):",
         pid
     );
     let mut stream = stdio_runner.run().await?;
-    drive_stream_until_shutdown(&mut stream).await;
+    drive_stream_until_shutdown(&mut stream, !quiet).await;
 
     Ok(())
 }
@@ -230,6 +223,7 @@ pub(crate) async fn run_system(
     rotate_logs: bool,
     max_log_size: u64,
     enable_server: bool,
+    server_listen: &str,
     server_port: u16,
 ) -> Result<(), RunnerError> {
     println!("System Resource Monitoring");
@@ -276,18 +270,14 @@ pub(crate) async fn run_system(
         max_log_size,
     )?));
 
-    // Add console output unless quiet
-    if !quiet {
-        system_runner = system_runner.add_analyzer(Box::new(OutputAnalyzer::new()));
-    }
-
     // Start web server if enabled
-    let _server_handle = start_web_server_if_enabled(enable_server, server_port, log_file, None)
-        .await
-        .map_err(|e| RunnerError::from(format!("Failed to start server: {}", e)))?;
+    let _server_handle =
+        start_web_server_if_enabled(enable_server, server_listen, server_port, log_file, None)
+            .await
+            .map_err(|e| RunnerError::from(format!("Failed to start server: {}", e)))?;
 
     let mut stream = system_runner.run().await?;
-    drive_stream_until_shutdown(&mut stream).await;
+    drive_stream_until_shutdown(&mut stream, !quiet).await;
 
     Ok(())
 }

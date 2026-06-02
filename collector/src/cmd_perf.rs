@@ -13,7 +13,8 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::{self, Write};
-use std::time::{Duration, Instant};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime};
 
 #[derive(Debug, Clone)]
 pub(crate) struct TopOptions {
@@ -375,6 +376,7 @@ fn session_agent_rows(
             .map(|p| agent_name_from_command(&p.comm, &p.command))
             .unwrap_or_else(|| "agent".to_string());
         rows.push(AgentTopRow {
+            session: format!("db:{root_pid}"),
             agent,
             pid: Some(root_pid),
             cpu_percent: if rows.is_empty() {
@@ -389,6 +391,7 @@ fn session_agent_rows(
             },
             processes: family.len(),
             tokens,
+            tools: 0,
             execs,
             failures,
             files: files.len(),
@@ -407,6 +410,7 @@ fn session_agent_rows(
                 continue;
             }
             rows.push(AgentTopRow {
+                session: short_session_id(&session.id),
                 agent: session
                     .agent_name
                     .clone()
@@ -416,6 +420,7 @@ fn session_agent_rows(
                 rss_mb: resources.max_rss_mb,
                 processes: 1,
                 tokens: (session.total_tokens > 0).then_some(session.total_tokens),
+                tools: 0,
                 execs: 0,
                 failures: 0,
                 files: 0,
@@ -603,6 +608,105 @@ fn build_live_top<'a>(
     _limit: usize,
     options: &TopOptions,
 ) -> AgentTopOutput<'a> {
+    let mut live_rows = live_process_rows(sample, previous, options);
+    sort_agent_rows(&mut live_rows, "cpu");
+    let local_sessions = discover_local_top_sessions(options);
+    let mut used_live_pids = HashSet::new();
+    let mut rows = Vec::new();
+
+    for session in local_sessions {
+        let live_idx = live_rows.iter().position(|row| {
+            !row.pid.is_some_and(|pid| used_live_pids.contains(&pid))
+                && row.agent == session.agent
+                && matches_top_filter(row.pid, Some(&row.agent), Some(&row.command), options)
+        });
+        let live = live_idx.and_then(|idx| live_rows.get(idx).cloned());
+        if let Some(pid) = live.as_ref().and_then(|row| row.pid) {
+            used_live_pids.insert(pid);
+        }
+        let command = session
+            .prompt_preview
+            .clone()
+            .or_else(|| live.as_ref().map(|row| row.command.clone()))
+            .unwrap_or_else(|| session.path.display().to_string());
+        let trace = if live.is_some() {
+            "local+proc"
+        } else {
+            "local"
+        };
+        rows.push(AgentTopRow {
+            session: session.display_id,
+            agent: session.agent,
+            pid: live.as_ref().and_then(|row| row.pid),
+            cpu_percent: live.as_ref().map(|row| row.cpu_percent).unwrap_or_default(),
+            rss_mb: live.as_ref().map(|row| row.rss_mb).unwrap_or_default(),
+            processes: live.as_ref().map(|row| row.processes).unwrap_or_default(),
+            tokens: (session.total_tokens > 0).then_some(session.total_tokens),
+            tools: session.tools,
+            execs: 0,
+            failures: 0,
+            files: 0,
+            network: 0,
+            unattributed: 0,
+            trace: trace.to_string(),
+            command,
+        });
+    }
+
+    rows.extend(live_rows.into_iter().filter(|row| {
+        row.pid
+            .map(|pid| !used_live_pids.contains(&pid))
+            .unwrap_or(true)
+    }));
+
+    let has_local = rows.iter().any(|row| row.trace.contains("local"));
+    let has_proc = rows.iter().any(|row| row.trace.contains("proc"));
+    let mut notes = Vec::new();
+    if has_local {
+        notes.push(
+            "session rows include agent-native local logs from ~/.claude or ~/.codex when present"
+                .to_string(),
+        );
+    }
+    if has_proc {
+        notes.push(
+            "proc evidence uses /proc; run agentsight record/stat for live files, network, and failures"
+                .to_string(),
+        );
+    }
+    if rows.is_empty() {
+        if options.pid.is_some() || options.comm.is_some() {
+            notes.push(
+                "no active process or local session matched the filter; try another -p/-c value or inspect a saved session with --db"
+                    .to_string(),
+            );
+        } else {
+            notes.push(
+                "no active known agent process or local Claude/Codex session found; use -c/-p, run an agent, or pass --db"
+                    .to_string(),
+            );
+        }
+    }
+
+    AgentTopOutput {
+        mode: "live sessions",
+        db: None,
+        duration_s: 0.0,
+        canonical_events: 0,
+        llm_calls: 0,
+        total_tokens: rows.iter().filter_map(|row| row.tokens).sum(),
+        rows,
+        sections: Vec::new(),
+        failures: Vec::new(),
+        notes,
+    }
+}
+
+fn live_process_rows(
+    sample: &LiveSample,
+    previous: Option<&LiveSample>,
+    options: &TopOptions,
+) -> Vec<AgentTopRow> {
     let roots = live_roots(sample, options);
     let children = children_by_ppid(&sample.procs);
     let mut rows = Vec::new();
@@ -627,12 +731,14 @@ fn build_live_top<'a>(
             .unwrap_or_else(|| "agent".to_string());
 
         rows.push(AgentTopRow {
+            session: format!("proc:{root_pid}"),
             agent,
             pid: Some(root_pid),
             cpu_percent,
             rss_mb,
             processes: family.len(),
             tokens: None,
+            tools: 0,
             execs: 0,
             failures: 0,
             files: 0,
@@ -645,36 +751,7 @@ fn build_live_top<'a>(
         });
     }
 
-    let mut notes = vec![
-        "live process view uses /proc; run agentsight record/stat for tokens, files, network, and failures"
-            .to_string(),
-    ];
-    if rows.is_empty() {
-        if options.pid.is_some() || options.comm.is_some() {
-            notes.push(
-                "no active process matched the filter; try another -p/-c value or inspect a saved session with --db"
-                    .to_string(),
-            );
-        } else {
-            notes.push(
-                "no active known agent process found; use -c/-p for arbitrary commands or --db for saved sessions"
-                    .to_string(),
-            );
-        }
-    }
-
-    AgentTopOutput {
-        mode: "live /proc",
-        db: None,
-        duration_s: 0.0,
-        canonical_events: 0,
-        llm_calls: 0,
-        total_tokens: 0,
-        rows,
-        sections: Vec::new(),
-        failures: Vec::new(),
-        notes,
-    }
+    rows
 }
 
 fn read_proc_info(pid: u32, page_size: u64) -> Option<ProcInfo> {
@@ -939,6 +1016,311 @@ fn known_agent_label(comm: &str, command: &str) -> Option<&'static str> {
     ]
     .into_iter()
     .find_map(|(marker, label)| needle.contains(marker).then_some(label))
+}
+
+#[derive(Debug, Clone)]
+struct LocalTopSession {
+    agent: String,
+    display_id: String,
+    path: PathBuf,
+    model: Option<String>,
+    total_tokens: i64,
+    tools: usize,
+    prompt_preview: Option<String>,
+}
+
+fn discover_local_top_sessions(options: &TopOptions) -> Vec<LocalTopSession> {
+    let mut candidates = Vec::new();
+    for (agent, dir) in local_session_dirs() {
+        walk_jsonl(&dir, &mut |path, meta| {
+            let updated = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            candidates.push((updated, agent, path.to_path_buf()));
+        });
+    }
+    candidates.sort_by_key(|(updated, _, _)| std::cmp::Reverse(*updated));
+
+    let mut sessions = Vec::new();
+    let mut seen_agents = HashSet::new();
+    for (_, agent, path) in candidates.into_iter().take(50) {
+        if seen_agents.contains(agent) {
+            continue;
+        }
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Some(session) = parse_local_top_session(agent, &path, &content) else {
+            continue;
+        };
+        if !local_session_matches_filter(&session, options) {
+            continue;
+        }
+        seen_agents.insert(agent);
+        sessions.push(session);
+    }
+    sessions
+}
+
+fn local_session_dirs() -> Vec<(&'static str, PathBuf)> {
+    let Some(home) = user_home_dir() else {
+        return Vec::new();
+    };
+    [
+        ("claude", home.join(".claude/projects")),
+        ("codex", home.join(".codex/sessions")),
+    ]
+    .into_iter()
+    .filter(|(_, path)| path.is_dir())
+    .collect()
+}
+
+fn user_home_dir() -> Option<PathBuf> {
+    std::env::var("SUDO_USER")
+        .ok()
+        .and_then(|user| {
+            fs::read_to_string("/etc/passwd").ok().and_then(|passwd| {
+                passwd
+                    .lines()
+                    .find(|line| line.starts_with(&format!("{user}:")))
+                    .and_then(|line| line.split(':').nth(5))
+                    .map(PathBuf::from)
+            })
+        })
+        .or_else(dirs::home_dir)
+}
+
+fn walk_jsonl(dir: &Path, f: &mut dyn FnMut(&Path, &fs::Metadata)) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            walk_jsonl(&path, f);
+        } else if path.extension().is_some_and(|ext| ext == "jsonl")
+            && let Ok(meta) = path.metadata()
+        {
+            f(&path, &meta);
+        }
+    }
+}
+
+fn parse_local_top_session(agent: &str, path: &Path, content: &str) -> Option<LocalTopSession> {
+    let mut session_id = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("session")
+        .to_string();
+    let mut model = None;
+    let mut total_tokens = 0i64;
+    let mut tools = 0usize;
+    let mut prompt_preview = None;
+
+    for line in content.lines() {
+        let Ok(obj) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if let Some(id) = local_session_id(&obj) {
+            session_id = id;
+        }
+        let typ = obj
+            .get("type")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        match (agent, typ) {
+            ("claude", "result") => {
+                if let Some(model_usage) = obj.get("modelUsage").and_then(|value| value.as_object())
+                {
+                    for (name, usage) in model_usage {
+                        model.get_or_insert_with(|| name.clone());
+                        total_tokens += json_i64(usage, "inputTokens")
+                            + json_i64(usage, "outputTokens")
+                            + json_i64(usage, "cacheReadInputTokens")
+                            + json_i64(usage, "cacheCreationInputTokens");
+                    }
+                }
+            }
+            ("claude", "assistant") => {
+                if let Some(items) = obj
+                    .pointer("/message/content")
+                    .and_then(|value| value.as_array())
+                {
+                    tools += items
+                        .iter()
+                        .filter(|item| {
+                            item.get("type").and_then(|value| value.as_str()) == Some("tool_use")
+                        })
+                        .count();
+                }
+            }
+            ("claude", "user") => {
+                if let Some(text) =
+                    local_message_preview(obj.pointer("/message/content").unwrap_or(&obj))
+                {
+                    prompt_preview = Some(text);
+                }
+            }
+            ("codex", "turn_context") => {
+                if let Some(name) = obj
+                    .pointer("/payload/model")
+                    .and_then(|value| value.as_str())
+                {
+                    model = Some(name.to_string());
+                }
+            }
+            ("codex", "event_msg") => {
+                if obj
+                    .pointer("/payload/type")
+                    .and_then(|value| value.as_str())
+                    == Some("token_count")
+                    && let Some(usage) = obj.pointer("/payload/info/total_token_usage")
+                {
+                    total_tokens = json_i64(usage, "total_tokens");
+                }
+            }
+            ("codex", "response_item")
+                if obj
+                    .pointer("/payload/type")
+                    .and_then(|value| value.as_str())
+                    == Some("function_call") =>
+            {
+                tools += 1;
+            }
+            ("codex", "message") | ("codex", "input") | ("codex", "user") => {
+                if let Some(text) = local_message_preview(&obj) {
+                    prompt_preview = Some(text);
+                }
+            }
+            _ => {
+                if prompt_preview.is_none()
+                    && typ.contains("user")
+                    && let Some(text) = local_message_preview(&obj)
+                {
+                    prompt_preview = Some(text);
+                }
+            }
+        }
+    }
+
+    if total_tokens == 0 && tools == 0 && prompt_preview.is_none() && model.is_none() {
+        return None;
+    }
+
+    Some(LocalTopSession {
+        agent: agent.to_string(),
+        display_id: format!("{agent}:{}", short_session_id(&session_id)),
+        path: path.to_path_buf(),
+        model,
+        total_tokens,
+        tools,
+        prompt_preview,
+    })
+}
+
+fn local_session_matches_filter(session: &LocalTopSession, options: &TopOptions) -> bool {
+    if options.pid.is_some() {
+        return true;
+    }
+    let Some(filter) = &options.comm else {
+        return true;
+    };
+    let filter = filter.to_ascii_lowercase();
+    session.agent.to_ascii_lowercase().contains(&filter)
+        || session
+            .prompt_preview
+            .as_ref()
+            .is_some_and(|prompt| prompt.to_ascii_lowercase().contains(&filter))
+        || session
+            .model
+            .as_ref()
+            .is_some_and(|model| model.to_ascii_lowercase().contains(&filter))
+        || session
+            .path
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .contains(&filter)
+}
+
+fn local_session_id(obj: &Value) -> Option<String> {
+    for key in ["sessionId", "session_id", "conversation_id"] {
+        if let Some(value) = obj.get(key).and_then(|value| value.as_str())
+            && !value.is_empty()
+        {
+            return Some(value.to_string());
+        }
+    }
+    for pointer in ["/payload/session_id", "/payload/sessionId"] {
+        if let Some(value) = obj.pointer(pointer).and_then(|value| value.as_str())
+            && !value.is_empty()
+        {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+fn local_message_preview(value: &Value) -> Option<String> {
+    let mut parts = Vec::new();
+    collect_local_text(value, &mut parts);
+    let text = parts
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!text.is_empty()).then(|| truncate_text(&text, 80))
+}
+
+fn collect_local_text(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::String(text) => out.push(text.clone()),
+        Value::Array(items) => {
+            for item in items {
+                collect_local_text(item, out);
+            }
+        }
+        Value::Object(obj) => {
+            if obj
+                .get("type")
+                .and_then(|value| value.as_str())
+                .is_some_and(|typ| typ == "tool_use" || typ == "function_call")
+            {
+                return;
+            }
+            for key in ["text", "content", "message", "input", "prompt"] {
+                if let Some(value) = obj.get(key) {
+                    collect_local_text(value, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn json_i64(value: &Value, key: &str) -> i64 {
+    value
+        .get(key)
+        .and_then(|value| value.as_i64().or_else(|| value.as_u64().map(|v| v as i64)))
+        .unwrap_or_default()
+}
+
+fn short_session_id(id: &str) -> String {
+    let id = id.trim();
+    if id.is_empty() {
+        return "session".to_string();
+    }
+    let compact = id
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(id)
+        .trim_end_matches(".jsonl");
+    truncate_text(compact, 12)
+}
+
+fn truncate_text(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        text.to_string()
+    } else {
+        text.chars().take(max.saturating_sub(1)).collect()
+    }
 }
 
 fn load_snapshot_and_resources(db: &str) -> StorageResult<(Snapshot, ResourcePeaks)> {

@@ -188,7 +188,7 @@ impl Runner for FakeRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::framework::analyzers::{Analyzer, FileLogger, OutputAnalyzer, SSEProcessor};
+    use crate::framework::analyzers::{Analyzer, FileLogger, SSEProcessor};
     use futures::stream::StreamExt;
     use std::fs;
 
@@ -328,15 +328,13 @@ mod tests {
         let _ = fs::remove_file(test_log_file1);
         let _ = fs::remove_file(test_log_file2);
 
-        // Chain with multiple file loggers and output analyzers
+        // Chain with multiple file loggers.
         let mut runner = FakeRunner::new()
             .event_count(2)
             .delay_ms(10)
             .add_analyzer(Box::new(SSEProcessor::new_with_timeout(5000)))
             .add_analyzer(Box::new(FileLogger::new(test_log_file1).unwrap()))
-            .add_analyzer(Box::new(FileLogger::new(test_log_file2).unwrap())) // Different settings
-            .add_analyzer(Box::new(OutputAnalyzer::new()))
-            .add_analyzer(Box::new(OutputAnalyzer::new())); // Different settings
+            .add_analyzer(Box::new(FileLogger::new(test_log_file2).unwrap()));
 
         let stream = runner.run().await.unwrap();
         let events: Vec<_> = stream.collect().await;
@@ -386,8 +384,7 @@ mod tests {
         let mut runner = FakeRunner::new()
             .event_count(0) // No events
             .delay_ms(10)
-            .add_analyzer(Box::new(SSEProcessor::new_with_timeout(5000)))
-            .add_analyzer(Box::new(OutputAnalyzer::new()));
+            .add_analyzer(Box::new(SSEProcessor::new_with_timeout(5000)));
 
         let stream = runner.run().await.unwrap();
         let events: Vec<_> = stream.collect().await;
@@ -404,7 +401,6 @@ mod tests {
             .delay_ms(10);
 
         runner = runner.add_analyzer(Box::new(SSEProcessor::new_with_timeout(5000)));
-        runner = runner.add_analyzer(Box::new(OutputAnalyzer::new()));
 
         // Generate mixed source events
         let event_stream = async_stream::stream! {
@@ -506,8 +502,7 @@ mod tests {
         let mut runner = FakeRunner::new()
             .event_count(25) // 50 events total
             .delay_ms(1)
-            .add_analyzer(Box::new(memory_tracker))
-            .add_analyzer(Box::new(OutputAnalyzer::new()));
+            .add_analyzer(Box::new(memory_tracker));
 
         let stream = runner.run().await.unwrap();
         let events: Vec<_> = stream.collect().await;
@@ -543,13 +538,12 @@ mod tests {
         // Create a realistic analyzer chain that might be used in production:
         // 1. HTTP analyzer for pairing requests/responses
         // 2. File logger for persistence
-        // 3. Output analyzer for real-time display
+        // 3. Stream collection by the caller
         let mut runner = FakeRunner::new()
             .event_count(10) // 20 events total
             .delay_ms(25) // Realistic timing
             .add_analyzer(Box::new(SSEProcessor::new_with_timeout(10000))) // 10 second timeout
-            .add_analyzer(Box::new(FileLogger::new(test_log_file).unwrap()))
-            .add_analyzer(Box::new(OutputAnalyzer::new())); // Silent for test
+            .add_analyzer(Box::new(FileLogger::new(test_log_file).unwrap()));
 
         let start_time = Instant::now();
         let stream = runner.run().await.unwrap();

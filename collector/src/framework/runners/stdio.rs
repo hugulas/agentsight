@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-use super::common::{AnalyzerProcessor, BinaryExecutor};
+use super::common::{AnalyzerProcessor, BinaryExecutor, parse_error_event};
 use super::{EventStream, Runner, RunnerError};
 use crate::framework::analyzers::Analyzer;
 use crate::framework::core::Event;
 use async_trait::async_trait;
-use futures::future;
 use futures::stream::StreamExt;
 use std::path::Path;
+use std::sync::{Arc, atomic::AtomicU64};
 
 /// Runner for collecting stdio payload events
 pub struct StdioRunner {
@@ -38,38 +38,26 @@ impl StdioRunner {
         self
     }
 
-    fn parse_stdio_event(json_value: serde_json::Value) -> Option<Event> {
-        let timestamp = match json_value.get("timestamp_ns").and_then(|v| v.as_u64()) {
-            Some(value) => value,
-            None => {
-                log::warn!("Skipping stdio event without timestamp_ns: {}", json_value);
-                return None;
-            }
+    fn parse_stdio_event(json_value: serde_json::Value, errors: &AtomicU64) -> Event {
+        let Some(timestamp) = json_value.get("timestamp_ns").and_then(|v| v.as_u64()) else {
+            return parse_error_event("stdio", json_value, "missing timestamp_ns", errors);
+        };
+        let Some(pid) = json_value
+            .get("pid")
+            .and_then(|v| v.as_u64())
+            .map(|value| value as u32)
+        else {
+            return parse_error_event("stdio", json_value, "missing pid", errors);
+        };
+        let Some(comm) = json_value
+            .get("comm")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+        else {
+            return parse_error_event("stdio", json_value, "missing comm", errors);
         };
 
-        let pid = match json_value.get("pid").and_then(|v| v.as_u64()) {
-            Some(value) => value as u32,
-            None => {
-                log::warn!("Skipping stdio event without pid: {}", json_value);
-                return None;
-            }
-        };
-
-        let comm = match json_value.get("comm").and_then(|v| v.as_str()) {
-            Some(value) => value.to_string(),
-            None => {
-                log::warn!("Skipping stdio event without comm: {}", json_value);
-                return None;
-            }
-        };
-
-        Some(Event::new_with_timestamp(
-            timestamp,
-            "stdio".to_string(),
-            pid,
-            comm,
-            json_value,
-        ))
+        Event::new_with_timestamp(timestamp, "stdio".to_string(), pid, comm, json_value)
     }
 }
 
@@ -81,8 +69,9 @@ impl Runner for StdioRunner {
             .with_runner_name("Stdio".to_string());
         let json_stream = executor.get_json_stream().await?;
 
+        let errors = Arc::new(AtomicU64::new(0));
         let event_stream =
-            json_stream.filter_map(|json_value| future::ready(Self::parse_stdio_event(json_value)));
+            json_stream.map(move |json_value| Self::parse_stdio_event(json_value, &errors));
 
         AnalyzerProcessor::process_through_analyzers(Box::pin(event_stream), &mut self.analyzers)
             .await
@@ -105,7 +94,10 @@ mod tests {
             "pid": 1234
         });
 
-        assert!(StdioRunner::parse_stdio_event(invalid).is_none());
+        let errors = AtomicU64::new(0);
+        let event = StdioRunner::parse_stdio_event(invalid, &errors);
+        assert_eq!(event.source, "diagnostic");
+        assert_eq!(event.data["type"], "runner_parse_error");
     }
 
     #[test]
@@ -117,7 +109,8 @@ mod tests {
             "data": "hello"
         });
 
-        let event = StdioRunner::parse_stdio_event(valid).expect("valid stdio event");
+        let errors = AtomicU64::new(0);
+        let event = StdioRunner::parse_stdio_event(valid, &errors);
         assert_eq!(event.source, "stdio");
         assert_eq!(event.pid, 1234);
         assert_eq!(event.comm, "python3");

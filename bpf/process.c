@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <time.h>
 #include <sys/resource.h>
+#include <unistd.h>
 #include <bpf/libbpf.h>
 #include <dirent.h>
 #include <string.h>
@@ -54,12 +55,14 @@ static struct env {
 	int command_count;
 	enum filter_mode filter_mode;
 	pid_t pid;
+	pid_t session_id;
 } env = {
 	.verbose = false,
 	.min_duration_ms = 0,
 	.command_count = 0,
 	.filter_mode = FILTER_MODE_PROC,
-	.pid = 0
+	.pid = 0,
+	.session_id = 0
 };
 
 /* Global PID tracker for userspace filtering */
@@ -68,30 +71,34 @@ static struct pid_tracker pid_tracker;
 const char *argp_program_version = "process-tracer 1.0";
 const char *argp_program_bug_address = "<bpf@vger.kernel.org>";
 const char argp_program_doc[] =
-"BPF process tracer with 3-level filtering.\n"
-"\n"
-"It traces process start and exits with configurable filtering levels.\n"
-"Shows associated information (filename, process duration, PID and PPID, etc).\n"
-"\n"
-"USAGE: ./process [-d <min-duration-ms>] [-c <command1,command2,...>] [-p <pid>] [-m <mode>] [-v]\n"
-"\n"
-"FILTER MODES:\n"
-"  0 (all):    Trace all processes and all read/write operations\n"
-"  1 (proc):   Trace all processes but only read/write for tracked PIDs\n"
-"  2 (filter): Only trace processes matching filters and their read/write (default)\n"
-"\n"
-"EXAMPLES:\n"
-"  ./process -m 0                   # Trace everything\n"
-"  ./process -m 1                   # Trace all processes, selective read/write\n"
-"  ./process -c \"claude,python\"    # Trace only claude/python processes\n"
-"  ./process -c \"ssh\" -d 1000     # Trace ssh processes lasting > 1 second\n"
-"  ./process -p 1234                # Trace only PID 1234\n";
+	"BPF process tracer with 3-level filtering.\n"
+	"\n"
+	"It traces process start and exits with configurable filtering levels.\n"
+	"Shows associated information (filename, process duration, PID and PPID, etc).\n"
+	"\n"
+	"USAGE: ./process [-d <min-duration-ms>] [-c <command1,command2,...>] [-p <pid>] [--session <sid>] [-m <mode>] [-v]\n"
+	"\n"
+	"FILTER MODES:\n"
+	"  0 (all):    Trace all processes and all read/write operations\n"
+	"  1 (proc):   Trace all processes but only read/write for tracked PIDs\n"
+	"  2 (filter): Only trace processes matching filters and their read/write (default)\n"
+	"\n"
+	"EXAMPLES:\n"
+	"  ./process -m 0                   # Trace everything\n"
+	"  ./process -m 1                   # Trace all processes, selective read/write\n"
+	"  ./process -c \"claude,python\"    # Trace only claude/python processes\n"
+	"  ./process -c \"ssh\" -d 1000     # Trace ssh processes lasting > 1 second\n"
+	"  ./process -p 1234                # Trace only PID 1234\n"
+	"  ./process --session 1234         # Trace processes in session 1234\n";
+
+#define SESSION_KEY 1001
 
 static const struct argp_option opts[] = {
 	{ "verbose", 'v', NULL, 0, "Verbose debug output" },
 	{ "duration", 'd', "DURATION-MS", 0, "Minimum process duration (ms) to report" },
 	{ "commands", 'c', "COMMAND-LIST", 0, "Comma-separated list of commands to trace (e.g., \"claude,python\")" },
 	{ "pid", 'p', "PID", 0, "Trace this PID only" },
+	{ "session", SESSION_KEY, "SID", 0, "Trace this process session only" },
 	{ "mode", 'm', "FILTER-MODE", 0, "Filter mode: 0=all, 1=proc, 2=filter (default=2)" },
 	{ "all", 'a', NULL, 0, "Deprecated: use -m 0 instead" },
 	{},
@@ -119,6 +126,15 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		env.pid = (pid_t)strtol(arg, NULL, 10);
 		if (errno || env.pid <= 0) {
 			fprintf(stderr, "Invalid PID: %s\n", arg);
+			argp_usage(state);
+		}
+		env.filter_mode = FILTER_MODE_FILTER;
+		break;
+	case SESSION_KEY:
+		errno = 0;
+		env.session_id = (pid_t)strtol(arg, NULL, 10);
+		if (errno || env.session_id <= 0) {
+			fprintf(stderr, "Invalid session id: %s\n", arg);
 			argp_usage(state);
 		}
 		env.filter_mode = FILTER_MODE_FILTER;
@@ -188,6 +204,25 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va
 }
 
 static volatile bool exiting = false;
+
+static bool process_in_target_session(pid_t pid)
+{
+	if (env.session_id <= 0)
+		return false;
+	return getsid(pid) == env.session_id;
+}
+
+static bool should_track_event_process(struct pid_tracker *tracker,
+				       const char *comm,
+				       pid_t pid,
+				       pid_t ppid)
+{
+	if (process_in_target_session(pid))
+		return true;
+	if (env.session_id > 0)
+		return false;
+	return should_track_process(tracker, comm, pid, ppid);
+}
 
 // Rate limiting check function
 static bool should_rate_limit_file(const struct event *e, uint64_t timestamp_ns, bool *add_warning) {
@@ -457,7 +492,7 @@ static int populate_initial_pids(struct pid_tracker *tracker, char **command_lis
 			continue;
 
 		/* Check if we should track this process */
-		if (should_track_process(tracker, comm, pid, ppid)) {
+		if (should_track_event_process(tracker, comm, pid, ppid)) {
 			if (pid_tracker_add(tracker, pid, ppid)) {
 				tracked_count++;
 			} else if (env.verbose) {
@@ -519,14 +554,14 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 				printf("}\n");
 				fflush(stdout);
 
-				// Flush all pending FILE_OPEN aggregations for this PID
-				flush_pid_file_opens(e->pid, timestamp_ns);
-			} else {
-				// EXEC event: check if should track
-				if (should_track_process(tracker, e->comm, e->pid, e->ppid)) {
-					pid_tracker_add(tracker, e->pid, e->ppid);
+			// Flush all pending FILE_OPEN aggregations for this PID
+			flush_pid_file_opens(e->pid, timestamp_ns);
+		} else {
+			// EXEC event: check if should track
+			if (should_track_event_process(tracker, e->comm, e->pid, e->ppid)) {
+				pid_tracker_add(tracker, e->pid, e->ppid);
 
-					// Report the EXEC event
+				// Report the EXEC event
 					printf("{");
 					printf("\"timestamp\":%llu,", timestamp_ns);
 					printf("\"event\":\"EXEC\",");

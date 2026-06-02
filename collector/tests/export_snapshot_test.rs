@@ -358,9 +358,38 @@ fn default_agent_run_summary_commands_are_real() {
 fn top_without_db_uses_live_process_view() {
     let top = agentsight_stdout(&["top", "--once"]);
     assert!(top.contains("AgentSight top -"), "{top}");
-    assert!(top.contains("live /proc"), "{top}");
+    assert!(top.contains("live sessions"), "{top}");
+    assert!(top.contains("SESSION"), "{top}");
     assert!(top.contains("AGENT"), "{top}");
     assert!(top.contains("PID"), "{top}");
     assert!(top.contains("CPU%"), "{top}");
     assert!(top.contains("TRACE"), "{top}");
+}
+
+#[test]
+fn top_discovers_agent_native_local_sessions() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let session_dir = temp.path().join(".codex/sessions/2026/06/02");
+    std::fs::create_dir_all(&session_dir).expect("session dir");
+    std::fs::write(
+        session_dir.join("rollout-test.jsonl"),
+        concat!(
+            "{\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-5.5\"}}\n",
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":11,\"output_tokens\":4,\"total_tokens\":15}}}}\n",
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\",\"name\":\"shell\"}}\n",
+            "{\"type\":\"message\",\"content\":\"fix the test\"}\n",
+        ),
+    )
+    .expect("codex session");
+
+    let top = agentsight_stdout_with_env(
+        &["top", "--once", "--limit", "20"],
+        &[("HOME", temp.path().as_os_str())],
+    );
+    assert!(top.contains("live sessions"), "{top}");
+    assert!(top.contains("codex:rollout-test"), "{top}");
+    assert!(top.contains("TOKENS"), "{top}");
+    assert!(top.contains("TOOLS"), "{top}");
+    assert!(top.contains("15"), "{top}");
+    assert!(top.contains("fix the test"), "{top}");
 }

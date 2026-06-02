@@ -113,7 +113,7 @@ impl Analyzer for MetadataEnricherAnalyzer {
 async fn test_complex_analyzer_chain_composition() {
     let temp_file = NamedTempFile::new().unwrap();
 
-    // Create a complex chain: Filter -> ChunkMerger -> Enrich -> FileLogger -> Output
+    // Create a complex chain: Filter -> ChunkMerger -> Enrich -> FileLogger
     let mut runner = FakeRunner::new()
         .event_count(5) // 10 events total
         .delay_ms(10)
@@ -122,8 +122,7 @@ async fn test_complex_analyzer_chain_composition() {
         .add_analyzer(Box::new(MetadataEnricherAnalyzer::new(
             json!({"test_run": "complex_chain", "version": "1.0"}),
         )))
-        .add_analyzer(Box::new(FileLogger::new(temp_file.path()).unwrap()))
-        .add_analyzer(Box::new(OutputAnalyzer::new()));
+        .add_analyzer(Box::new(FileLogger::new(temp_file.path()).unwrap()));
 
     let stream = runner.run().await.unwrap();
     let events: Vec<_> = stream.collect().await;
@@ -164,8 +163,7 @@ async fn test_analyzer_chain_error_resilience() {
         .event_count(5)
         .delay_ms(10)
         .add_analyzer(Box::new(ErrorSimulatorAnalyzer::new(3))) // Error on 3rd event
-        .add_analyzer(Box::new(SSEProcessor::new_with_timeout(5000)))
-        .add_analyzer(Box::new(OutputAnalyzer::new()));
+        .add_analyzer(Box::new(SSEProcessor::new_with_timeout(5000)));
 
     let stream = runner.run().await.unwrap();
     let events: Vec<_> = stream.collect().await;
@@ -203,8 +201,7 @@ async fn test_analyzer_chain_concurrent_processing() {
             let mut runner = FakeRunner::new()
                 .event_count(3)
                 .delay_ms(5)
-                .add_analyzer(Box::new(SSEProcessor::new_with_timeout(5000)))
-                .add_analyzer(Box::new(OutputAnalyzer::new()));
+                .add_analyzer(Box::new(SSEProcessor::new_with_timeout(5000)));
 
             let stream = runner.run().await.unwrap();
             let events: Vec<_> = stream.collect().await;
@@ -293,8 +290,7 @@ async fn test_analyzer_chain_streaming_behavior() {
     let mut runner = FakeRunner::new()
         .event_count(5) // 10 events total
         .delay_ms(100) // 100ms delay to ensure streaming behavior is observable
-        .add_analyzer(Box::new(TimestampRecorderAnalyzer::new(timestamps_clone)))
-        .add_analyzer(Box::new(OutputAnalyzer::new()));
+        .add_analyzer(Box::new(TimestampRecorderAnalyzer::new(timestamps_clone)));
 
     let stream = runner.run().await.unwrap();
     let _: Vec<_> = stream.collect().await;
@@ -356,8 +352,7 @@ async fn test_analyzer_chain_backpressure_handling() {
     let mut runner = FakeRunner::new()
         .event_count(3) // 6 events total
         .delay_ms(10) // Fast generation
-        .add_analyzer(Box::new(SlowAnalyzer::new(50))) // Slow processing
-        .add_analyzer(Box::new(OutputAnalyzer::new()));
+        .add_analyzer(Box::new(SlowAnalyzer::new(50))); // Slow processing
 
     let stream = runner.run().await.unwrap();
     let events: Vec<_> = stream.collect().await;
@@ -433,8 +428,7 @@ async fn test_analyzer_chain_resource_cleanup() {
             .add_analyzer(Box::new(ResourceTrackingAnalyzer::new(
                 "test2".to_string(),
                 Arc::clone(&resources),
-            )))
-            .add_analyzer(Box::new(OutputAnalyzer::new()));
+            )));
 
         let stream = runner.run().await.unwrap();
         let events: Vec<_> = stream.collect().await;

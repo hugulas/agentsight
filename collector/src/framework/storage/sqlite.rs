@@ -26,6 +26,7 @@ struct PendingRequest {
     model: Option<String>,
     host: Option<String>,
     path: Option<String>,
+    request_id: Option<String>,
     body_json: Option<Value>,
 }
 
@@ -789,36 +790,28 @@ impl GenericProjector {
         match event.kind {
             EventKind::LlmRequest => {
                 if let (Some(pid), Some(tid)) = (event.pid, event.tid) {
-                    self.pending
-                        .entry((pid, tid))
-                        .or_default()
-                        .push_back(PendingRequest {
-                            canonical_event_id: event.event_id.clone(),
-                            timestamp_ms: event.timestamp_ms,
-                            pid,
-                            comm: event.comm.clone().unwrap_or_default(),
-                            provider: event.provider.clone(),
-                            model: event.model.clone(),
-                            host: event.host.clone(),
-                            path: event.path.clone(),
-                            body_json: body_json(&event.attributes),
-                        });
+                    let req = PendingRequest {
+                        canonical_event_id: event.event_id.clone(),
+                        timestamp_ms: event.timestamp_ms,
+                        pid,
+                        comm: event.comm.clone().unwrap_or_default(),
+                        provider: event.provider.clone(),
+                        model: event.model.clone(),
+                        host: event.host.clone(),
+                        path: event.path.clone(),
+                        request_id: event.request_id.clone(),
+                        body_json: body_json(&event.attributes),
+                    };
+                    self.project_llm_request_orphan(store, &req)?;
+                    self.pending.entry((pid, tid)).or_default().push_back(req);
                 }
             }
             EventKind::HttpResponse | EventKind::LlmResponse | EventKind::LlmError => {
                 if let (Some(pid), Some(tid)) = (event.pid, event.tid) {
-                    let key = (pid, tid);
-                    let mut remove_key = false;
-                    let req = self.pending.get_mut(&key).and_then(|requests| {
-                        let req = requests.pop_front();
-                        remove_key = requests.is_empty();
-                        req
-                    });
-                    if remove_key {
-                        self.pending.remove(&key);
-                    }
-                    if let Some(req) = req {
-                        self.project_llm_pair(store, req, event)?;
+                    if let Some((req, confidence)) = self.take_matching_request(pid, tid, event) {
+                        self.project_llm_pair(store, req, event, confidence)?;
+                    } else {
+                        self.project_llm_response_orphan(store, event)?;
                     }
                 }
             }
@@ -833,11 +826,39 @@ impl GenericProjector {
         Ok(())
     }
 
+    fn take_matching_request(
+        &mut self,
+        pid: u32,
+        tid: u64,
+        resp: &CanonicalEvent,
+    ) -> Option<(PendingRequest, f32)> {
+        let key = (pid, tid);
+        let (req, confidence, remove_key) = {
+            let requests = self.pending.get_mut(&key)?;
+            let (req, confidence) = if let Some(resp_request_id) = resp.request_id.as_deref() {
+                let pos = requests
+                    .iter()
+                    .position(|req| req.request_id.as_deref() == Some(resp_request_id))?;
+                (requests.remove(pos)?, 0.95)
+            } else if requests.len() == 1 {
+                (requests.pop_front()?, 0.75)
+            } else {
+                return None;
+            };
+            (req, confidence, requests.is_empty())
+        };
+        if remove_key {
+            self.pending.remove(&key);
+        }
+        Some((req, confidence))
+    }
+
     fn project_llm_pair(
         &self,
         store: &SqliteStore,
         req: PendingRequest,
         resp: &CanonicalEvent,
+        confidence: f32,
     ) -> StorageResult<()> {
         let response_body = body_json(&resp.attributes);
         let response_body = response_body.or_else(|| {
@@ -867,7 +888,7 @@ impl GenericProjector {
 
         store.insert_llm_call(&LlmCallInsert {
             id: &llm_call_id,
-            request_event_id: &req.canonical_event_id,
+            request_event_id: Some(req.canonical_event_id.as_str()),
             response_event_id: Some(resp.event_id.as_str()),
             start_timestamp_ms: req.timestamp_ms,
             end_timestamp_ms: Some(resp.timestamp_ms),
@@ -883,7 +904,7 @@ impl GenericProjector {
             request_body_json: request_body_json.as_deref(),
             response_body_json: response_body_json.as_deref(),
             adapter_id: "generic",
-            confidence: 0.80,
+            confidence,
         })?;
 
         let usage = if resp.source == "sse_processor" {
@@ -910,7 +931,7 @@ impl GenericProjector {
                 total_tokens: usage.total_tokens(),
                 source: "response_usage",
                 adapter_id: "generic",
-                confidence: 0.80,
+                confidence,
             })?;
         }
 
@@ -943,11 +964,145 @@ impl GenericProjector {
                 reason: error_message.as_deref().unwrap_or("LLM call failed"),
                 evidence_json: response_body_json.as_deref().unwrap_or("{}"),
                 adapter_id: "generic",
-                confidence: 0.80,
+                confidence,
             })?;
         }
 
         Ok(())
+    }
+
+    fn project_llm_request_orphan(
+        &self,
+        store: &SqliteStore,
+        req: &PendingRequest,
+    ) -> StorageResult<()> {
+        let llm_call_id = format!("llm-{}", req.canonical_event_id);
+        let provider = req
+            .provider
+            .clone()
+            .or_else(|| req.host.as_deref().map(provider_from_host));
+        let request_body_json = req.body_json.as_ref().map(|v| v.to_string());
+
+        store.insert_llm_call(&LlmCallInsert {
+            id: &llm_call_id,
+            request_event_id: Some(req.canonical_event_id.as_str()),
+            response_event_id: None,
+            start_timestamp_ms: req.timestamp_ms,
+            end_timestamp_ms: None,
+            pid: req.pid,
+            comm: &req.comm,
+            provider: provider.as_deref(),
+            model: req.model.as_deref(),
+            host: req.host.as_deref(),
+            path: req.path.as_deref(),
+            status_code: None,
+            error_type: None,
+            error_message: None,
+            request_body_json: request_body_json.as_deref(),
+            response_body_json: None,
+            adapter_id: "generic",
+            confidence: 0.40,
+        })?;
+
+        store.insert_audit_event(&AuditInsert {
+            id: &format!("audit-{}", llm_call_id),
+            canonical_event_id: Some(req.canonical_event_id.as_str()),
+            timestamp_ms: req.timestamp_ms,
+            audit_type: "llm",
+            pid: Some(req.pid),
+            comm: Some(&req.comm),
+            subject: req.model.as_deref(),
+            action: Some("request"),
+            target: req.host.as_deref(),
+            status: Some("orphan_request"),
+            summary: Some("LLM request"),
+            details_json: request_body_json.as_deref().unwrap_or("{}"),
+        })
+    }
+
+    fn project_llm_response_orphan(
+        &self,
+        store: &SqliteStore,
+        resp: &CanonicalEvent,
+    ) -> StorageResult<()> {
+        let response_body = body_json(&resp.attributes)
+            .or_else(|| (resp.source == "sse_processor").then(|| resp.attributes.clone()));
+        let response_body_json = response_body.as_ref().map(|v| v.to_string());
+        let model = resp
+            .model
+            .clone()
+            .or_else(|| response_body.as_ref().and_then(extract_model));
+        let provider = resp
+            .provider
+            .clone()
+            .or_else(|| resp.host.as_deref().map(provider_from_host));
+        let pid = resp.pid.unwrap_or(0);
+        let comm = resp.comm.clone().unwrap_or_default();
+        let llm_call_id = format!("llm-orphan-{}", resp.event_id);
+
+        store.insert_llm_call(&LlmCallInsert {
+            id: &llm_call_id,
+            request_event_id: None,
+            response_event_id: Some(resp.event_id.as_str()),
+            start_timestamp_ms: resp.timestamp_ms,
+            end_timestamp_ms: Some(resp.timestamp_ms),
+            pid,
+            comm: &comm,
+            provider: provider.as_deref(),
+            model: model.as_deref(),
+            host: resp.host.as_deref(),
+            path: resp.path.as_deref(),
+            status_code: resp.status_code,
+            error_type: None,
+            error_message: None,
+            request_body_json: None,
+            response_body_json: response_body_json.as_deref(),
+            adapter_id: "generic",
+            confidence: 0.35,
+        })?;
+
+        let usage = if resp.source == "sse_processor" {
+            extract_token_usage_from_sse(&resp.attributes)
+        } else {
+            response_body
+                .as_ref()
+                .map(extract_token_usage)
+                .unwrap_or_default()
+        };
+        if !usage.is_empty() {
+            store.insert_token_usage(&TokenInsert {
+                id: &format!("token-{}", llm_call_id),
+                llm_call_id: &llm_call_id,
+                timestamp_ms: resp.timestamp_ms,
+                pid,
+                comm: &comm,
+                provider: provider.as_deref(),
+                model: model.as_deref(),
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                cache_creation_tokens: usage.cache_creation_tokens,
+                cache_read_tokens: usage.cache_read_tokens,
+                total_tokens: usage.total_tokens(),
+                source: "orphan_response_usage",
+                adapter_id: "generic",
+                confidence: 0.35,
+            })?;
+        }
+
+        store.insert_audit_event(&AuditInsert {
+            id: &format!("audit-{}", llm_call_id),
+            canonical_event_id: Some(resp.event_id.as_str()),
+            timestamp_ms: resp.timestamp_ms,
+            audit_type: "llm",
+            pid: Some(pid),
+            comm: Some(&comm),
+            subject: model.as_deref(),
+            action: Some("response"),
+            target: resp.host.as_deref(),
+            status: Some("orphan_response"),
+            summary: Some("LLM response"),
+            details_json: response_body_json.as_deref().unwrap_or("{}"),
+        })
     }
 
     fn project_process_audit(
@@ -1024,7 +1179,7 @@ fn is_writable_open(event: &CanonicalEvent) -> bool {
 
 struct LlmCallInsert<'a> {
     id: &'a str,
-    request_event_id: &'a str,
+    request_event_id: Option<&'a str>,
     response_event_id: Option<&'a str>,
     start_timestamp_ms: u64,
     end_timestamp_ms: Option<u64>,
@@ -1465,7 +1620,7 @@ mod tests {
     }
 
     #[test]
-    fn correlates_multiple_pending_requests_on_same_thread_fifo() {
+    fn keeps_ambiguous_same_thread_requests_unpaired() {
         let mut store = SqliteStore::open_in_memory().unwrap();
         let mut projector = GenericProjector::new();
         for (timestamp, model) in [(1, "claude-a"), (2, "claude-b")] {
@@ -1505,6 +1660,14 @@ mod tests {
             .connection()
             .query_row("SELECT COUNT(*) FROM llm_calls", [], |r| r.get(0))
             .unwrap();
+        let orphan_responses: i64 = store
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM llm_calls WHERE request_event_id IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         let total: i64 = store
             .connection()
             .query_row(
@@ -1513,7 +1676,8 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(count, 2);
+        assert_eq!(count, 4);
+        assert_eq!(orphan_responses, 2);
         assert_eq!(total, 30);
     }
 }

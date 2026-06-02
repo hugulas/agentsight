@@ -52,7 +52,7 @@ pub(crate) fn latest_session_db() -> Option<String> {
 }
 
 const MAX_SESSIONS: usize = 50;
-const MAX_TOTAL_BYTES: u64 = 500 * 1024 * 1024; // 500 MB
+const MAX_TOTAL_BYTES: u64 = 50 * 1024 * 1024; // 50 MB
 
 pub(crate) fn cleanup_old_sessions() {
     let Some(dir) = sessions_dir() else { return };

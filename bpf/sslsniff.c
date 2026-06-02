@@ -101,6 +101,7 @@ const char argp_program_doc[] =
 
 struct env {
 	pid_t pid;
+	pid_t session_id;
 	int uid;
 	char *comm;
 	bool openssl;
@@ -111,6 +112,7 @@ struct env {
 } env = {
 	.uid = INVALID_UID,
 	.pid = INVALID_PID,
+	.session_id = INVALID_PID,
 	.openssl = true,
 	.gnutls = false,
 	.nss = false,
@@ -119,9 +121,11 @@ struct env {
 };
 
 #define EXTRA_LIB_KEY 1003
+#define SESSION_KEY 1004
 
 static const struct argp_option opts[] = {
 	{"pid", 'p', "PID", 0, "Sniff this PID only."},
+	{"session", SESSION_KEY, "SID", 0, "Sniff this process session only."},
 	{"uid", 'u', "UID", 0, "Sniff this UID only."},
 	{"comm", 'c', "COMMAND", 0, "Sniff only commands matching string."},
 	{"no-openssl", 'o', NULL, 0, "Do not show OpenSSL calls."},
@@ -281,6 +285,14 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state) {
 	switch (key) {
 	case 'p':
 		env.pid = atoi(arg);
+		break;
+	case SESSION_KEY:
+		errno = 0;
+		env.session_id = (pid_t)strtol(arg, NULL, 10);
+		if (errno || env.session_id <= 0) {
+			fprintf(stderr, "Invalid session id: %s\n", arg);
+			argp_usage(state);
+		}
 		break;
 	case 'u':
 		env.uid = atoi(arg);
@@ -613,6 +625,9 @@ void print_event(struct probe_SSL_data_t *event, const char *evt) {
 	}
 
 	if (env.comm && strcmp(env.comm, event->comm) != 0) {
+		return;
+	}
+	if (env.session_id > 0 && getsid(event->pid) != env.session_id) {
 		return;
 	}
 

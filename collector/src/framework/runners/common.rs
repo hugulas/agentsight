@@ -3,15 +3,63 @@
 
 use super::{EventStream, RunnerError};
 use crate::framework::analyzers::Analyzer;
+use crate::framework::core::Event;
 use futures::stream::Stream;
 use log::debug;
 use std::pin::Pin;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command as TokioCommand;
 
 /// Type alias for JSON stream
 pub type JsonStream = Pin<Box<dyn Stream<Item = serde_json::Value> + Send>>;
+
+pub fn current_boot_time_ns() -> u64 {
+    std::fs::read_to_string("/proc/uptime")
+        .ok()
+        .and_then(|uptime| uptime.split_whitespace().next()?.parse::<f64>().ok())
+        .map(|secs| (secs * 1_000_000_000.0) as u64)
+        .unwrap_or(0)
+}
+
+pub fn parse_error_event(
+    runner: &'static str,
+    raw: serde_json::Value,
+    reason: impl Into<String>,
+    errors: &AtomicU64,
+) -> Event {
+    let timestamp = raw
+        .get("timestamp_ns")
+        .or_else(|| raw.get("timestamp"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or_else(current_boot_time_ns);
+    let pid = raw
+        .get("pid")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32)
+        .unwrap_or(0);
+    let comm = raw
+        .get("comm")
+        .and_then(|v| v.as_str())
+        .unwrap_or(runner)
+        .to_string();
+    let count = errors.fetch_add(1, Ordering::Relaxed) + 1;
+
+    Event::new_with_timestamp(
+        timestamp,
+        "diagnostic".to_string(),
+        pid,
+        comm,
+        serde_json::json!({
+            "type": "runner_parse_error",
+            "runner": runner,
+            "reason": reason.into(),
+            "parse_error_count": count,
+            "raw": raw,
+        }),
+    )
+}
 
 /// Common binary executor for runners - now supports streaming
 pub struct BinaryExecutor {

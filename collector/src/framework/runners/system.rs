@@ -22,6 +22,8 @@ pub struct SystemConfig {
     pub pid: Option<u32>,
     /// Process name to monitor (None = monitor all)
     pub comm: Option<String>,
+    /// Session ID to monitor (None = monitor by pid/comm/system-wide)
+    pub session_id: Option<u32>,
     /// Include child processes in aggregation
     pub include_children: bool,
     /// CPU usage threshold for alerts (%)
@@ -36,6 +38,7 @@ impl Default for SystemConfig {
             interval_secs: 10,
             pid: None,
             comm: None,
+            session_id: None,
             include_children: true,
             cpu_threshold: None,
             memory_threshold: None,
@@ -73,6 +76,12 @@ impl SystemRunner {
     /// Monitor processes by name
     pub fn comm(mut self, comm: impl Into<String>) -> Self {
         self.config.comm = Some(comm.into());
+        self
+    }
+
+    /// Monitor a process session.
+    pub fn session(mut self, session_id: u32) -> Self {
+        self.config.session_id = Some(session_id);
         self
     }
 
@@ -147,6 +156,22 @@ fn create_system_event_stream(config: SystemConfig) -> Pin<Box<dyn Stream<Item =
             interval.tick().await;
 
             let timestamp = get_boot_time_ns();
+
+            if let Some(session_id) = config.session_id {
+                let pids = find_pids_by_session(session_id);
+                if !pids.is_empty()
+                    && let Ok(event) = collect_process_metrics(
+                        session_id,
+                        &pids,
+                        timestamp,
+                        &mut previous_stats,
+                        &config,
+                    )
+                {
+                    yield event;
+                }
+                continue;
+            }
 
             // Find target PIDs to monitor
             let target_pids = find_target_pids(&config);
@@ -248,22 +273,49 @@ fn get_all_children(parent_pid: u32) -> Vec<u32> {
             if let Ok(file_name) = entry.file_name().into_string()
                 && let Ok(pid) = file_name.parse::<u32>()
                 && let Ok(stat) = fs::read_to_string(format!("/proc/{}/stat", pid))
+                && let Some((ppid, _, _)) = parse_proc_stat_ids(&stat)
+                && ppid == parent_pid
             {
-                // Extract PPID from stat file
-                let fields: Vec<&str> = stat.split_whitespace().collect();
-                if fields.len() > 3
-                    && let Ok(ppid) = fields[3].parse::<u32>()
-                    && ppid == parent_pid
-                {
-                    children.push(pid);
-                    // Recursively get grandchildren
-                    children.extend(get_all_children(pid));
-                }
+                children.push(pid);
+                // Recursively get grandchildren
+                children.extend(get_all_children(pid));
             }
         }
     }
 
     children
+}
+
+fn find_pids_by_session(session_id: u32) -> Vec<u32> {
+    let mut matching_pids = Vec::new();
+
+    if let Ok(entries) = fs::read_dir("/proc") {
+        for entry in entries.flatten() {
+            if let Ok(file_name) = entry.file_name().into_string()
+                && let Ok(pid) = file_name.parse::<u32>()
+                && let Ok(stat) = fs::read_to_string(format!("/proc/{}/stat", pid))
+                && let Some((_, _, session)) = parse_proc_stat_ids(&stat)
+                && session == session_id
+            {
+                matching_pids.push(pid);
+            }
+        }
+    }
+
+    matching_pids
+}
+
+fn parse_proc_stat_ids(stat: &str) -> Option<(u32, u32, u32)> {
+    let after_comm = stat.rsplit_once(") ")?.1;
+    let fields: Vec<&str> = after_comm.split_whitespace().collect();
+    if fields.len() < 4 {
+        return None;
+    }
+    Some((
+        fields.get(1)?.parse().ok()?,
+        fields.get(2)?.parse().ok()?,
+        fields.get(3)?.parse().ok()?,
+    ))
 }
 
 /// Collect metrics for a process and its children
@@ -550,10 +602,7 @@ mod tests {
 
         // Create a runner that monitors the test process itself
         let current_pid = std::process::id();
-        let mut runner = SystemRunner::new()
-            .interval(1)
-            .pid(current_pid)
-            .add_analyzer(Box::new(crate::framework::analyzers::OutputAnalyzer::new()));
+        let mut runner = SystemRunner::new().interval(1).pid(current_pid);
 
         match runner.run().await {
             Ok(mut stream) => {

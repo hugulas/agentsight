@@ -7,10 +7,11 @@ use crate::binary_resolver::{
     binary_embeds_ssl, parse_container_ref, resolve_binary_path, resolve_container_binary_path,
 };
 use crate::cli_db::run_capture_adapters;
+use crate::cli_output::print_event_json;
 use crate::framework::{
     analyzers::{
-        AuthHeaderRemover, FileLogger, HTTPFilter, HTTPParser, OtelExporter, OutputAnalyzer,
-        SSEProcessor, SSLFilter, TimestampNormalizer,
+        AuthHeaderRemover, FileLogger, HTTPFilter, HTTPParser, OtelExporter, SSEProcessor,
+        SSLFilter, TimestampNormalizer,
     },
     binary_extractor::BinaryExtractor,
     runners::{
@@ -20,6 +21,13 @@ use crate::framework::{
     storage::StorageAnalyzer,
 };
 use crate::server::WebServer;
+
+pub(crate) const DEFAULT_SERVER_LISTEN: &str = "127.0.0.1";
+
+pub(crate) struct StartedWebServer {
+    pub(crate) url: String,
+    pub(crate) _handle: tokio::task::JoinHandle<()>,
+}
 
 /// Configuration for exporting GenAI spans to an OpenTelemetry Collector.
 #[derive(Clone)]
@@ -40,6 +48,7 @@ pub(crate) struct OtelConfig {
 pub(crate) struct TraceConfig {
     pub(crate) ssl: bool,
     pub(crate) pid: Option<u32>,
+    pub(crate) session_id: Option<u32>,
     pub(crate) ssl_uid: Option<u32>,
     pub(crate) comm: Option<String>,
     pub(crate) ssl_filter: Vec<String>,
@@ -68,6 +77,7 @@ pub(crate) struct TraceConfig {
     pub(crate) rotate_logs: bool,
     pub(crate) max_log_size: u64,
     pub(crate) server: bool,
+    pub(crate) server_listen: Option<String>,
     pub(crate) server_port: u16,
 }
 
@@ -118,6 +128,7 @@ pub(crate) fn build_trace_agent(
     // Bind config fields to the local names the body below uses.
     let ssl_enabled = cfg.ssl;
     let pid = cfg.pid;
+    let session_id = cfg.session_id;
     let ssl_uid = cfg.ssl_uid;
     let comm = cfg.comm.as_deref();
     let ssl_filter = cfg.ssl_filter.as_slice();
@@ -140,7 +151,6 @@ pub(crate) fn build_trace_agent(
     let binary_path = cfg.binary_path.as_deref();
     let log_file = cfg.log_file.as_str();
     let db_path = cfg.db_path.as_deref();
-    let quiet = cfg.quiet;
     let rotate_logs = cfg.rotate_logs;
     let max_log_size = cfg.max_log_size;
 
@@ -152,8 +162,13 @@ pub(crate) fn build_trace_agent(
 
         // Configure SSL runner arguments (sslsniff supports -p, -u, -c, -h, -v, --binary-path)
         let mut ssl_args = Vec::new();
-        if let Some(pid_filter) = pid {
+        if session_id.is_none()
+            && let Some(pid_filter) = pid
+        {
             ssl_args.extend(["-p".to_string(), pid_filter.to_string()]);
+        }
+        if let Some(session_filter) = session_id {
+            ssl_args.extend(["--session".to_string(), session_filter.to_string()]);
         }
         if let Some(uid_filter) = ssl_uid {
             ssl_args.extend(["-u".to_string(), uid_filter.to_string()]);
@@ -214,17 +229,10 @@ pub(crate) fn build_trace_agent(
                     otel_config.endpoint.clone(),
                     otel_config.capture_content,
                 )));
-                println!("✓ OpenTelemetry GenAI export enabled");
             }
         }
 
         agent = agent.add_runner(Box::new(ssl_runner));
-        let http_filter_info = if ssl_http && !http_filter.is_empty() {
-            format!(" with {} HTTP filter patterns", http_filter.len())
-        } else {
-            String::new()
-        };
-        println!("✓ SSL monitoring enabled{}", http_filter_info);
     }
 
     // Add stdio runner if enabled
@@ -245,7 +253,6 @@ pub(crate) fn build_trace_agent(
         stdio_runner = stdio_runner.add_analyzer(Box::new(TimestampNormalizer::new()));
 
         agent = agent.add_runner(Box::new(stdio_runner));
-        println!("✓ Stdio monitoring enabled for PID {}", pid_filter);
     }
 
     // Add process runner if enabled
@@ -253,8 +260,14 @@ pub(crate) fn build_trace_agent(
         let mut process_runner =
             ProcessRunner::from_binary_extractor(binary_extractor.get_process_path());
 
-        // Configure process runner arguments (process supports -c, -d, -m, -v)
+        // Configure process runner arguments.
         let mut process_args = Vec::new();
+        if let Some(pid_filter) = pid {
+            process_args.extend(["-p".to_string(), pid_filter.to_string()]);
+        }
+        if let Some(session_filter) = session_id {
+            process_args.extend(["--session".to_string(), session_filter.to_string()]);
+        }
         if let Some(comm_filter) = comm {
             process_args.extend(["-c".to_string(), comm_filter.to_string()]);
         }
@@ -272,7 +285,6 @@ pub(crate) fn build_trace_agent(
         process_runner = process_runner.add_analyzer(Box::new(TimestampNormalizer::new()));
 
         agent = agent.add_runner(Box::new(process_runner));
-        println!("✓ Process monitoring enabled");
     }
 
     // Add system resource runner if enabled
@@ -288,15 +300,14 @@ pub(crate) fn build_trace_agent(
         if let Some(pid_filter) = pid {
             system_runner = system_runner.pid(pid_filter);
         }
+        if let Some(session_filter) = session_id {
+            system_runner = system_runner.session(session_filter);
+        }
 
         // Add TimestampNormalizer first
         system_runner = system_runner.add_analyzer(Box::new(TimestampNormalizer::new()));
 
         agent = agent.add_runner(Box::new(system_runner));
-        println!(
-            "✓ System monitoring enabled (interval: {}s)",
-            system_interval
-        );
     }
 
     // Ensure at least one runner is enabled
@@ -314,19 +325,12 @@ pub(crate) fn build_trace_agent(
         rotate_logs,
         max_log_size,
     )?));
-    println!("✓ Logging to file: {}", log_file);
 
     if let Some(path) = db_path {
         let storage = StorageAnalyzer::new(path).map_err(|e| {
             RunnerError::from(format!("failed to open SQLite database '{}': {}", path, e))
         })?;
         agent = agent.add_global_analyzer(Box::new(storage));
-        println!("✓ SQLite storage enabled: {}", path);
-    }
-
-    if !quiet {
-        agent = agent.add_global_analyzer(Box::new(OutputAnalyzer::new()));
-        println!("✓ Console output enabled");
     }
 
     Ok(agent)
@@ -375,6 +379,11 @@ pub(crate) async fn run_trace(
     }
 
     let enable_server = cfg.server;
+    let server_listen = cfg
+        .server_listen
+        .as_deref()
+        .unwrap_or(DEFAULT_SERVER_LISTEN)
+        .to_string();
     let server_port = cfg.server_port;
     let log_file = cfg.log_file.clone();
     let db_path = cfg.db_path.clone();
@@ -391,15 +400,20 @@ pub(crate) async fn run_trace(
     println!("Press Ctrl+C to stop");
 
     // Start web server if enabled
-    let _server_handle =
-        start_web_server_if_enabled(enable_server, server_port, &log_file, db_path.as_deref())
-            .await
-            .map_err(|e| RunnerError::from(format!("Failed to start server: {}", e)))?;
+    let _server_handle = start_web_server_if_enabled(
+        enable_server,
+        &server_listen,
+        server_port,
+        &log_file,
+        db_path.as_deref(),
+    )
+    .await
+    .map_err(|e| RunnerError::from(format!("Failed to start server: {}", e)))?;
 
     let mut stream = agent.run().await?;
 
     // Drive the stream so the analyzer chain (file logging, storage, etc.) runs.
-    drive_stream_until_shutdown(&mut stream).await;
+    drive_stream_until_shutdown(&mut stream, !cfg.quiet).await;
     drop(stream);
     drop(agent);
 
@@ -410,43 +424,63 @@ pub(crate) async fn run_trace(
 
 pub(crate) async fn start_web_server_if_enabled(
     enable_server: bool,
+    listen: &str,
     port: u16,
     log_file: &str,
     db_path: Option<&str>,
-) -> Result<Option<tokio::task::JoinHandle<()>>, Box<dyn std::error::Error>> {
+) -> Result<Option<StartedWebServer>, Box<dyn std::error::Error>> {
     if !enable_server {
         return Ok(None);
     }
 
-    let addr = format!("0.0.0.0:{}", port)
+    let listen = if listen.trim().is_empty() {
+        DEFAULT_SERVER_LISTEN
+    } else {
+        listen.trim()
+    };
+    let addr = format!("{}:{}", listen, port)
         .parse()
         .map_err(|e| format!("Invalid server address: {}", e))?;
+    let token = uuid::Uuid::new_v4().to_string();
 
-    let web_server = WebServer::new(log_file, db_path)
+    let web_server = WebServer::new(log_file, db_path, Some(token.clone()))
         .map_err(|e| format!("Failed to create web server: {}", e))?;
 
-    println!("🌐 Starting web server on http://{}", addr);
-    println!("   Frontend will be available once the server starts");
+    let host = if listen == "0.0.0.0" || listen == "::" {
+        "127.0.0.1"
+    } else {
+        listen
+    };
+    let url = format!("http://{}:{}/?token={}", host, port, token);
+    println!("Starting web server on {}", url);
 
     let server_handle = tokio::spawn(async move {
         if let Err(e) = web_server.start(addr).await {
-            eprintln!("❌ Web server error: {}", e);
+            eprintln!("Web server error: {}", e);
         }
     });
 
     // Give the server a moment to start
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    Ok(Some(server_handle))
+    Ok(Some(StartedWebServer {
+        url,
+        _handle: server_handle,
+    }))
 }
 
-pub(crate) async fn drive_stream_until_shutdown(stream: &mut EventStream) {
+pub(crate) async fn drive_stream_until_shutdown(stream: &mut EventStream, print_events: bool) {
     let shutdown = crate::shutdown_notify();
     loop {
         tokio::select! {
             maybe_event = stream.next() => {
-                if maybe_event.is_none() {
-                    break;
+                match maybe_event {
+                    Some(event) => {
+                        if print_events {
+                            print_event_json(&event);
+                        }
+                    }
+                    None => break,
                 }
             }
             _ = shutdown.notified() => {

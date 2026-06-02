@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-use super::common::{AnalyzerProcessor, BinaryExecutor};
+use super::common::{AnalyzerProcessor, BinaryExecutor, current_boot_time_ns, parse_error_event};
 use super::{EventStream, Runner, RunnerError};
 use crate::framework::analyzers::Analyzer;
 use crate::framework::core::Event;
 use async_trait::async_trait;
 use futures::stream::StreamExt;
 use std::path::Path;
+use std::sync::{Arc, atomic::AtomicU64};
 
 /// Runner for collecting process/system events
 pub struct ProcessRunner {
@@ -41,6 +42,38 @@ impl ProcessRunner {
             .with_runner_name("Process".to_string());
         self
     }
+
+    fn parse_process_event(json_value: serde_json::Value, errors: &AtomicU64) -> Event {
+        if json_value.get("event").and_then(|v| v.as_str()) == Some("CLOCK_SYNC") {
+            return Event::new_with_timestamp(
+                current_boot_time_ns(),
+                "diagnostic".to_string(),
+                0,
+                "process".to_string(),
+                json_value,
+            );
+        }
+
+        let Some(pid) = json_value
+            .get("pid")
+            .and_then(|v| v.as_u64())
+            .map(|p| p as u32)
+        else {
+            return parse_error_event("process", json_value, "missing pid", errors);
+        };
+        let Some(timestamp) = json_value.get("timestamp").and_then(|v| v.as_u64()) else {
+            return parse_error_event("process", json_value, "missing timestamp", errors);
+        };
+        let Some(comm) = json_value
+            .get("comm")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+        else {
+            return parse_error_event("process", json_value, "missing comm", errors);
+        };
+
+        Event::new_with_timestamp(timestamp, "process".to_string(), pid, comm, json_value)
+    }
 }
 
 #[async_trait]
@@ -49,37 +82,9 @@ impl Runner for ProcessRunner {
         // Get raw JSON stream from the binary executor
         let json_stream = self.executor.get_json_stream().await?;
 
-        // Convert JSON values directly to framework Events
-        // Filter out metadata events (CLOCK_SYNC etc.) that lack pid/comm
-        let event_stream = json_stream.filter_map(|json_value| async move {
-            let pid = json_value
-                .get("pid")
-                .and_then(|v| v.as_u64())
-                .map(|p| p as u32)?;
-            let timestamp = json_value
-                .get("timestamp")
-                .and_then(|v| v.as_u64())
-                .unwrap_or_else(|| {
-                    use std::time::{SystemTime, UNIX_EPOCH};
-                    SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map(|d| d.as_nanos() as u64)
-                        .unwrap_or(0)
-                });
-            let comm = json_value
-                .get("comm")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-                .to_string();
-
-            Some(Event::new_with_timestamp(
-                timestamp,
-                "process".to_string(),
-                pid,
-                comm,
-                json_value,
-            ))
-        });
+        let errors = Arc::new(AtomicU64::new(0));
+        let event_stream =
+            json_stream.map(move |json_value| Self::parse_process_event(json_value, &errors));
 
         AnalyzerProcessor::process_through_analyzers(Box::pin(event_stream), &mut self.analyzers)
             .await
@@ -129,8 +134,7 @@ mod tests {
         }
 
         // Create runner with real binary
-        let mut runner = ProcessRunner::from_binary_extractor(binary_path)
-            .add_analyzer(Box::new(crate::framework::analyzers::OutputAnalyzer::new()));
+        let mut runner = ProcessRunner::from_binary_extractor(binary_path);
 
         // Run the binary and collect events for 30 seconds
         if let Ok(mut stream) = runner.run().await {

@@ -63,6 +63,7 @@ pub(crate) async fn run_exec(
     rotate_logs: bool,
     max_log_size: u64,
     enable_server: bool,
+    server_listen: &str,
     server_port: u16,
     print_summary: bool,
 ) -> Result<Option<String>, RunnerError> {
@@ -93,55 +94,18 @@ pub(crate) async fn run_exec(
     println!("AgentSight record");
     println!("{}", "=".repeat(60));
 
-    // Derive the process comm filter from the command's base name. The kernel
-    // truncates comm to 15 chars (TASK_COMM_LEN - 1), so match that here.
-    let base = std::path::Path::new(program)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or(program);
-    let comm: String = base.chars().take(15).collect();
-
-    // Auto-discover the SSL binary unless the user pinned it explicitly.
     let binary_path = match binary_path_override {
         Some(p) => {
             println!("→ Using provided binary path: {}", p);
-            Some(p.to_string())
+            p.to_string()
         }
-        None => match resolve_binary_path(program) {
-            Ok(p) => {
-                println!("✓ Auto-discovered binary: {}", p);
-                Some(p)
-            }
-            Err(e) => {
-                // Non-fatal: process/system monitoring still works without SSL.
-                println!("⚠ Could not auto-discover binary for SSL capture: {}", e);
-                println!("  SSL traffic may not be captured. Pass --binary-path to override.");
-                None
-            }
-        },
-    };
-    println!("✓ Process filter (--comm): {}", comm);
-
-    // Same optimized filters as the `record` command.
-    let db_path_for_adapters = db_path.clone();
-    let cfg = TraceConfig {
-        ssl: true,
-        comm: Some(comm.clone()),
-        ssl_filter: vec!["data=0\\r\\n\\r\\n".to_string()],
-        ssl_http: true,
-        process: true,
-        stdio_max_bytes: 8192,
-        system: true,
-        system_interval: 2,
-        http_filter: vec!["request.path_prefix=/v1/rgstr | response.status_code=202 | request.method=HEAD | response.body=".to_string()],
-        binary_path,
-        log_file: log_file.to_string(),
-        db_path,
-        adapter: adapter.map(str::to_string),
-        quiet: true,
-        rotate_logs,
-        max_log_size,
-        ..Default::default()
+        None => {
+            let p = resolve_binary_path(program).map_err(|e| {
+                RunnerError::from(format!("failed to resolve '{}': {}", program, e))
+            })?;
+            println!("✓ Auto-discovered binary: {}", p);
+            p
+        }
     };
 
     // When not running as root, warm the sudo credential cache so the
@@ -171,11 +135,68 @@ pub(crate) async fn run_exec(
         }
     }
 
+    let mut command_builder = tokio::process::Command::new(program);
+    command_builder.args(prog_args);
+    let target_ids = target_user_ids();
+    if let Some((uid, gid)) = target_ids {
+        println!("✓ Dropping child to uid={} gid={}", uid, gid);
+    }
+    unsafe {
+        command_builder.pre_exec(move || {
+            if let Some((uid, gid)) = target_ids {
+                if libc::setgid(gid) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::setuid(uid) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::raise(libc::SIGSTOP) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
+    let mut child = command_builder
+        .spawn()
+        .map_err(|e| RunnerError::from(format!("failed to launch '{}': {}", program, e)))?;
+    let child_pid = child
+        .id()
+        .ok_or_else(|| RunnerError::from("failed to get target child PID"))?;
+    println!("✓ Run attribution session: {}", child_pid);
+
+    let db_path_for_adapters = db_path.clone();
+    let cfg = TraceConfig {
+        ssl: true,
+        pid: Some(child_pid),
+        session_id: Some(child_pid),
+        ssl_filter: vec!["data=0\\r\\n\\r\\n".to_string()],
+        ssl_http: true,
+        process: true,
+        stdio_max_bytes: 8192,
+        system: true,
+        system_interval: 2,
+        http_filter: vec!["request.path_prefix=/v1/rgstr | response.status_code=202 | request.method=HEAD | response.body=".to_string()],
+        binary_path: Some(binary_path),
+        log_file: log_file.to_string(),
+        db_path,
+        adapter: adapter.map(str::to_string),
+        quiet: true,
+        rotate_logs,
+        max_log_size,
+        server_listen: Some(server_listen.to_string()),
+        ..Default::default()
+    };
+
     let mut agent = build_trace_agent(binary_extractor, &cfg)?;
 
-    // Start web server before launching the child so the UI is ready immediately.
-    let _server_handle = start_web_server_if_enabled(
+    let server_handle = start_web_server_if_enabled(
         enable_server,
+        server_listen,
         server_port,
         log_file,
         db_path_for_adapters.as_deref(),
@@ -183,37 +204,24 @@ pub(crate) async fn run_exec(
     .await
     .map_err(|e| RunnerError::from(format!("Failed to start server: {}", e)))?;
 
-    // Attach eBPF first (uprobes bind to the binary file, so they catch the
-    // child even though it starts a moment later).
-    let mut stream = agent.run().await?;
+    let mut stream = match agent.run().await {
+        Ok(stream) => stream,
+        Err(e) => {
+            stop_child(&mut child).await;
+            return Err(e);
+        }
+    };
 
-    if enable_server {
-        println!("🌐 Web UI: http://127.0.0.1:{}", server_port);
+    if let Some(server) = &server_handle {
+        println!("Web UI: {}", server.url);
     }
     println!("▶ Launching: {}", command.join(" "));
     println!("{}", "=".repeat(60));
 
-    let mut command_builder = tokio::process::Command::new(program);
-    command_builder.args(prog_args);
-    // When running as root (via sudo), drop the child back to the real user
-    // so the agent doesn't have elevated privileges.
-    if let Some((uid, gid)) = target_user_ids() {
-        println!("✓ Dropping child to uid={} gid={}", uid, gid);
-        unsafe {
-            command_builder.pre_exec(move || {
-                if libc::setgid(gid) != 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                if libc::setuid(uid) != 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
+    if let Err(e) = continue_child(child_pid) {
+        stop_child(&mut child).await;
+        return Err(e);
     }
-    let mut child = command_builder
-        .spawn()
-        .map_err(|e| RunnerError::from(format!("failed to launch '{}': {}", program, e)))?;
 
     let shutdown = crate::shutdown_notify();
     let mut target_exited = false;
@@ -260,14 +268,27 @@ pub(crate) async fn run_exec(
         print_session_summary(db);
     }
 
-    if enable_server {
+    if let Some(server) = &server_handle {
         println!(
-            "Recorded data remains viewable at http://127.0.0.1:{} (log: {})",
-            server_port, log_file
+            "Recorded data remains viewable at {} (log: {})",
+            server.url, log_file
         );
     }
 
     Ok(db_path_for_adapters)
+}
+
+fn continue_child(pid: u32) -> Result<(), RunnerError> {
+    let result = unsafe { libc::kill(pid as libc::pid_t, libc::SIGCONT) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(RunnerError::from(format!(
+            "failed to continue target process {}: {}",
+            pid,
+            std::io::Error::last_os_error()
+        )))
+    }
 }
 
 pub(crate) async fn stop_child(child: &mut tokio::process::Child) {
