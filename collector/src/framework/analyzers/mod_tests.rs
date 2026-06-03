@@ -1,5 +1,6 @@
 use super::*;
 use crate::framework::runners::{EventStream, FakeRunner, Runner};
+use crate::sinks::FileLogger;
 use futures::stream::StreamExt;
 use serde_json::json;
 use std::sync::{

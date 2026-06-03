@@ -74,6 +74,6 @@ pub(crate) fn cleanup_old_sessions() {
 pub(crate) fn run_db_list() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let dir = sessions_dir().ok_or("cannot determine data directory")?;
     let entries = sorted_session_dbs(&dir);
-    crate::cli_output::print_session_list(&dir, &entries);
+    crate::output::print_session_list(&dir, &entries);
     Ok(())
 }

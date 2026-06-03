@@ -17,11 +17,9 @@ pub trait Analyzer: Send + Sync {
 pub mod auth_header_remover;
 pub mod common;
 pub mod event;
-pub mod file_logger;
 mod filter_metrics;
 pub mod http_filter;
 pub mod http_parser;
-pub mod otel_exporter;
 pub mod sse_processor;
 pub mod ssl_filter;
 pub mod timestamp_normalizer;
@@ -30,10 +28,8 @@ pub mod timestamp_normalizer;
 mod sse_processor_tests;
 
 pub use auth_header_remover::AuthHeaderRemover;
-pub use file_logger::FileLogger;
 pub use http_filter::{HTTPFilter, print_global_http_filter_metrics};
 pub use http_parser::HTTPParser;
-pub use otel_exporter::OtelExporter;
 pub use sse_processor::SSEProcessor;
 pub use ssl_filter::{SSLFilter, print_global_ssl_filter_metrics};
 pub use timestamp_normalizer::TimestampNormalizer;

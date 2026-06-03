@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-use crate::framework::storage::{SnapshotOptions, SqliteStore};
+use crate::framework::storage::SnapshotOptions;
 use crate::server::assets::FrontendAssets;
+use crate::view::MaterializedView;
 use http_body_util::Full;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -219,28 +220,26 @@ async fn serve_sqlite_api(
 
     let result = tokio::task::spawn_blocking(
         move || -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
-            let store = SqliteStore::open(&db_path)?;
+            let view = MaterializedView::open_sqlite(&db_path)?;
             let options = SnapshotOptions { audit_limit };
             let value = match resource {
-                ApiResource::TokenSummary => serde_json::to_value(store.token_summary(&group_by)?)?,
-                ApiResource::Snapshot => serde_json::to_value(store.export_snapshot(options)?)?,
+                ApiResource::TokenSummary => serde_json::to_value(view.token_summary(&group_by)?)?,
+                ApiResource::Snapshot => serde_json::to_value(view.export_snapshot(options)?)?,
                 ApiResource::Summary => {
-                    serde_json::to_value(store.export_snapshot(options)?.summary)?
+                    serde_json::to_value(view.export_snapshot(options)?.summary)?
                 }
                 ApiResource::Events => {
-                    serde_json::to_value(store.export_snapshot(options)?.network_targets)?
+                    serde_json::to_value(view.export_snapshot(options)?.network_targets)?
                 }
                 ApiResource::AuditEvents => {
-                    serde_json::to_value(store.export_snapshot(options)?.audit_events)?
+                    serde_json::to_value(view.export_snapshot(options)?.audit_events)?
                 }
                 ApiResource::Sessions => {
-                    serde_json::to_value(store.export_snapshot(options)?.sessions)?
+                    serde_json::to_value(view.export_snapshot(options)?.sessions)?
                 }
-                ApiResource::Agents => {
-                    serde_json::to_value(store.export_snapshot(options)?.agents)?
-                }
+                ApiResource::Agents => serde_json::to_value(view.export_snapshot(options)?.agents)?,
                 ApiResource::Interruptions => {
-                    serde_json::to_value(store.export_snapshot(options)?.interruptions)?
+                    serde_json::to_value(view.export_snapshot(options)?.interruptions)?
                 }
             };
             Ok(value)

@@ -188,7 +188,8 @@ impl Runner for FakeRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::framework::analyzers::{Analyzer, FileLogger, SSEProcessor};
+    use crate::framework::analyzers::{Analyzer, SSEProcessor};
+    use crate::sinks::FileLogger;
     use futures::stream::StreamExt;
     use std::fs;
 

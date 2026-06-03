@@ -1,5 +1,11 @@
 # Production Observability Testing Plan
 
+> Historical note: this plan describes the pre-materialized-view adapter design.
+> Current code uses `sources/`, `view/`, `sinks/`, and `output/`; SQL adapters
+> and `collector/adapters/sql/` have been removed. Use
+> `docs/design/materialized-view-architecture.md` as the current architecture
+> reference.
+
 This document defines how to test the unified event model, SQLite storage,
 generic projections, adapters, and the migration from JSONL-first behavior.
 

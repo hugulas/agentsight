@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-use super::{Analyzer, AnalyzerError};
+use crate::framework::analyzers::{Analyzer, AnalyzerError};
 use crate::framework::runners::EventStream;
-use crate::framework::storage::{
+use crate::framework::storage::{ViewUpdate, ViewUpdateSink};
+use crate::view::types::{
     AuditEventRow, LlmCallRow, NetworkTargetRow, ResourceSampleRow, SessionRow, TokenUsageRow,
-    ToolCallRow, ViewUpdate, ViewUpdateSink,
+    ToolCallRow,
 };
 use async_trait::async_trait;
 use futures::stream::StreamExt;
@@ -38,7 +39,7 @@ impl Default for LogRotationConfig {
     }
 }
 
-/// FileLogger analyzer that logs events to a specified file
+/// File-backed logger for view updates, with raw-event analyzer support for debug commands.
 pub struct FileLogger {
     file_path: String,
     file_handle: Arc<Mutex<File>>,

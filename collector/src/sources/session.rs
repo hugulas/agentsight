@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::framework::storage::sqlite::Snapshot;
+use crate::view::types::Snapshot;
 
 #[derive(Debug, Clone)]
 pub(crate) struct LocalSession {
@@ -118,6 +118,94 @@ pub(crate) fn from_snapshot(snapshot: &Snapshot) -> Vec<LocalSession> {
             .filter(|row| row.audit_type == "file")
             .filter_map(|row| row.target.as_deref()),
     )
+}
+
+pub(crate) fn model_rows(sessions: &[LocalSession]) -> Vec<(String, i64, i64, i64, i64)> {
+    let mut models = BTreeMap::<String, (i64, i64, i64, i64)>::new();
+    for session in sessions {
+        for (model, (input, output, total)) in &session.models {
+            let entry = models.entry(model.clone()).or_default();
+            entry.0 += input;
+            entry.1 += output;
+            entry.2 += total;
+            entry.3 += 1;
+        }
+    }
+    models
+        .into_iter()
+        .map(|(model, (input, output, total, calls))| (model, input, output, total, calls))
+        .collect()
+}
+
+pub(crate) fn model_token_counts(sessions: &[LocalSession]) -> BTreeMap<String, i64> {
+    let mut counts = BTreeMap::new();
+    for session in sessions {
+        for (model, (_, _, total)) in &session.models {
+            *counts.entry(model.clone()).or_default() += *total;
+        }
+    }
+    counts
+}
+
+pub(crate) fn dominant_model(sessions: &[LocalSession]) -> Option<String> {
+    model_token_counts(sessions)
+        .into_iter()
+        .max_by_key(|(_, total)| *total)
+        .map(|(model, _)| model)
+}
+
+pub(crate) fn total_tokens(sessions: &[LocalSession]) -> i64 {
+    sessions
+        .iter()
+        .filter(|session| session.has_tokens())
+        .map(|session| session.total_tokens)
+        .sum()
+}
+
+pub(crate) fn tool_counts(sessions: &[LocalSession]) -> BTreeMap<String, usize> {
+    let mut tools = BTreeMap::new();
+    for session in sessions {
+        for (tool, count) in &session.tools {
+            *tools.entry(tool.clone()).or_default() += count;
+        }
+    }
+    tools
+}
+
+pub(crate) fn prompt_char_counts(sessions: &[LocalSession]) -> Vec<u64> {
+    sessions
+        .iter()
+        .filter_map(|session| session.prompt_preview.as_ref())
+        .map(|prompt| prompt.chars().count() as u64)
+        .collect()
+}
+
+pub(crate) fn matches_filter(
+    session: &LocalSession,
+    pid_filter: Option<u32>,
+    text_filter: Option<&str>,
+) -> bool {
+    if pid_filter.is_some() {
+        return true;
+    }
+    let Some(filter) = text_filter else {
+        return true;
+    };
+    let filter = filter.to_ascii_lowercase();
+    session.agent.to_ascii_lowercase().contains(&filter)
+        || session
+            .prompt_preview
+            .as_ref()
+            .is_some_and(|prompt| prompt.to_ascii_lowercase().contains(&filter))
+        || session
+            .model
+            .as_ref()
+            .is_some_and(|model| model.to_ascii_lowercase().contains(&filter))
+        || session
+            .path
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .contains(&filter)
 }
 
 pub(crate) fn count_local_sessions() -> Vec<(&'static str, PathBuf, usize, u64)> {

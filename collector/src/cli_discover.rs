@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-use crate::cli_output::{print_discovery, print_json};
+use crate::output::{print_discovery, print_json};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 

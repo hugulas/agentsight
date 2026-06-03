@@ -3,7 +3,7 @@
 
 //! OpenTelemetry GenAI exporter.
 //!
-//! Maps the LLM HTTP request/response pairs reconstructed by [`HTTPParser`] onto
+//! Maps completed materialized `llm_call` rows onto
 //! OpenTelemetry **GenAI semantic-convention** (`gen_ai.*`) spans and ships them
 //! to an OpenTelemetry Collector via **OTLP/HTTP (JSON)** — the standard wire
 //! format understood by the OTel Collector, Jaeger, Grafana Tempo, and the major
@@ -13,17 +13,13 @@
 //!
 //! Spec: <https://opentelemetry.io/docs/specs/semconv/gen-ai/>
 //!
-//! Each request/response pair becomes one `chat {model}` CLIENT span. Requests
-//! and responses are correlated by `(pid, tid)`; the span's start/end times come
-//! from the request and response event timestamps. Token usage, finish reasons,
-//! and (opt-in) message content are parsed from the JSON bodies, tolerating the
-//! OpenAI, OpenAI-Responses, and Anthropic payload shapes.
+//! Each completed call becomes one `chat {model}` CLIENT span. Correlation and
+//! token extraction happen before this sink sees the row; this sink only maps
+//! stable view data to OTLP.
 //!
-//! [`HTTPParser`]: super::http_parser::HTTPParser
-
-use super::AnalyzerError;
+use crate::framework::analyzers::AnalyzerError;
 use crate::framework::storage::ViewUpdateSink;
-use crate::framework::storage::sqlite::LlmCallRow;
+use crate::view::types::LlmCallRow;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use hyper_util::client::legacy::Client;

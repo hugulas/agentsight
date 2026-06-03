@@ -4,7 +4,7 @@
 use super::{EventStream, Runner, RunnerError};
 use crate::framework::analyzers::Analyzer;
 use crate::framework::core::Event;
-use crate::procfs::ProcSnapshot;
+use crate::sources::proc::ProcSnapshot;
 use async_trait::async_trait;
 use futures::stream::Stream;
 use serde_json::json;

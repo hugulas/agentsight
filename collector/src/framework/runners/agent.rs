@@ -83,8 +83,9 @@ impl Runner for AgentRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::framework::analyzers::{FileLogger, HTTPParser, SSEProcessor};
+    use crate::framework::analyzers::{HTTPParser, SSEProcessor};
     use crate::framework::runners::FakeRunner;
+    use crate::sinks::FileLogger;
     use futures::stream::StreamExt;
     use std::time::Duration;
     use tempfile::NamedTempFile;

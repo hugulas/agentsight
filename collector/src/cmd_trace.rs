@@ -6,15 +6,9 @@ use futures::stream::StreamExt;
 use crate::binary_resolver::{
     binary_embeds_ssl, parse_container_ref, resolve_binary_path, resolve_container_binary_path,
 };
-use crate::cli_output::{
-    print_event_json, print_trace_container_binary_resolved, print_trace_header,
-    print_trace_shutdown, print_trace_ssl_binary_discovered, print_trace_start,
-    print_web_server_error, print_web_server_start,
-};
 use crate::framework::{
     analyzers::{
-        AuthHeaderRemover, FileLogger, HTTPFilter, HTTPParser, OtelExporter, SSEProcessor,
-        SSLFilter, TimestampNormalizer,
+        AuthHeaderRemover, HTTPFilter, HTTPParser, SSEProcessor, SSLFilter, TimestampNormalizer,
     },
     binary_extractor::BinaryExtractor,
     runners::{
@@ -23,8 +17,14 @@ use crate::framework::{
     },
     storage::StorageAnalyzer,
 };
-use crate::procfs::{PidSeed, ProcSnapshot};
+use crate::output::{
+    print_event_json, print_trace_container_binary_resolved, print_trace_header,
+    print_trace_shutdown, print_trace_ssl_binary_discovered, print_trace_start,
+    print_web_server_error, print_web_server_start,
+};
 use crate::server::WebServer;
+use crate::sinks::{FileLogger, OtelExporter};
+use crate::sources::proc::{PidSeed, ProcSnapshot};
 
 pub(crate) const DEFAULT_SERVER_LISTEN: &str = "127.0.0.1";
 pub(crate) const DEFAULT_RECORD_STDIO_MAX_BYTES: u32 = 65_536;

@@ -20,26 +20,26 @@ use tokio::sync::Notify;
 mod binary_resolver;
 mod cli_db;
 mod cli_discover;
-mod cli_output;
 mod cmd_debug;
 mod cmd_exec;
 mod cmd_perf;
 mod cmd_trace;
 mod framework;
-mod local_sessions;
-mod procfs;
+mod output;
 mod server;
 mod session;
+mod sinks;
+mod sources;
+mod view;
 
 use cli_db::{
     configured_db_path, run_audit_query, run_db_summary, run_export, run_prompts_query, run_replay,
     run_token_query,
 };
 use cli_discover::run_discover;
-use cli_output::print_record_session_db_error;
 use cmd_debug::{run_raw_process, run_raw_ssl, run_raw_stdio, run_system};
 use cmd_exec::{default_session_db_path, print_session_summary, run_exec};
-use cmd_perf::{TopOptions, run_live_top_query, run_live_top_tui, run_stat_query, run_top_query};
+use cmd_perf::{run_live_top_query, run_live_top_tui, run_stat_query, run_top_query};
 use cmd_trace::{
     DEFAULT_RECORD_STDIO_MAX_BYTES, OtelConfig, TraceConfig, convert_runner_error, run_trace,
 };
@@ -47,6 +47,8 @@ use framework::{
     analyzers::{print_global_http_filter_metrics, print_global_ssl_filter_metrics},
     binary_extractor::BinaryExtractor,
 };
+use output::TopOptions;
+use output::print_record_session_db_error;
 use session::{resolve_db_or_latest, run_db_list};
 
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);

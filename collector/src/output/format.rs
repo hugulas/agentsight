@@ -8,7 +8,7 @@ use std::path::Path;
 
 use crate::framework::analyzers::common;
 use crate::framework::core::Event;
-use crate::framework::storage::sqlite::{AuditRow, LlmCallRow, TokenSummary};
+use crate::view::types::{AuditRow, LlmCallRow, TokenSummary};
 
 #[derive(Debug, Default, Serialize)]
 pub(crate) struct ResourcePeaks {
@@ -39,6 +39,14 @@ pub(crate) struct StatOutput {
 }
 
 pub(crate) type TopSection = (&'static str, &'static str, Vec<(String, i64)>);
+
+#[derive(Debug, Clone)]
+pub(crate) struct TopOptions {
+    pub(crate) pid: Option<u32>,
+    pub(crate) comm: Option<String>,
+    pub(crate) sort: String,
+    pub(crate) view: String,
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct AgentTopRow {

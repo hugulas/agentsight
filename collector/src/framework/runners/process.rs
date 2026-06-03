@@ -5,7 +5,7 @@ use super::common::{AnalyzerProcessor, BinaryExecutor, current_boot_time_ns, par
 use super::{EventStream, Runner, RunnerError};
 use crate::framework::analyzers::Analyzer;
 use crate::framework::core::Event;
-use crate::procfs::PidSeed;
+use crate::sources::proc::PidSeed;
 use async_trait::async_trait;
 use futures::stream::StreamExt;
 use std::path::Path;

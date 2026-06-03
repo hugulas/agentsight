@@ -4,14 +4,6 @@
 use futures::stream::StreamExt;
 
 use crate::binary_resolver::{binary_embeds_ssl, resolve_binary_path};
-use crate::cli_output::{
-    SessionSummary, print_record_attribution_session, print_record_auto_binary_path,
-    print_record_data_url, print_record_drop_user, print_record_header, print_record_kill_error,
-    print_record_launch, print_record_monitoring_stream_ended, print_record_provided_binary_path,
-    print_record_session_db_error, print_record_session_summary, print_record_shutdown,
-    print_record_sudo_prompt, print_record_target_exited, print_record_target_shutdown_error,
-    print_record_target_status_error, print_record_target_wait_error, print_record_web_ui,
-};
 use crate::cmd_trace::{
     DEFAULT_RECORD_STDIO_MAX_BYTES, TraceConfig, build_trace_agent, drain_stream_for,
     prepare_process_seeds, start_web_server_if_enabled,
@@ -20,6 +12,14 @@ use crate::framework::{
     analyzers::{print_global_http_filter_metrics, print_global_ssl_filter_metrics},
     binary_extractor::BinaryExtractor,
     runners::{Runner, RunnerError},
+};
+use crate::output::{
+    SessionSummary, print_record_attribution_session, print_record_auto_binary_path,
+    print_record_data_url, print_record_drop_user, print_record_header, print_record_kill_error,
+    print_record_launch, print_record_monitoring_stream_ended, print_record_provided_binary_path,
+    print_record_session_db_error, print_record_session_summary, print_record_shutdown,
+    print_record_sudo_prompt, print_record_target_exited, print_record_target_shutdown_error,
+    print_record_target_status_error, print_record_target_wait_error, print_record_web_ui,
 };
 use crate::session::sessions_dir;
 

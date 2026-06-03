@@ -6,12 +6,12 @@ AgentSight uses a live materialized view as the boundary between capture and
 consumption.
 
 ```
-Runners + analyzers                 Live view                         Consumers
--------------------                 ---------                         ---------
+Sources / analyzers                 View boundary                     Consumers
+-------------------                 -------------                     ---------
 SSL / process / stdio / system  ->  StorageAnalyzer/ViewProjector  ->  FileLogger
 HTTPParser / SSEProcessor           SQLite materialized tables    ->  SQLite DB
-TimestampNormalizer / filters       ViewUpdate stream             ->  OTel
-                                                                      CLI/API
+Proc + session sources              MaterializedView facade       ->  OTel
+TimestampNormalizer / filters       ViewUpdate stream             ->  CLI/API
 ```
 
 The important rule is that persistent outputs are derived from the view, not
@@ -127,7 +127,8 @@ back to the legacy `Event` parser and rebuilds view rows through
 `StorageAnalyzer`/`ViewProjector`.
 
 `stat --db`, `report --db`, `top --db --once`, `prompts --db`, and
-`db export` read the materialized tables directly through `SqliteStore`.
+`db export` read the materialized tables through the `MaterializedView` query
+facade. Command code does not reach through to `SqliteStore` internals.
 
 ## API Role
 
@@ -165,29 +166,40 @@ a source for local-only summaries.
 ## Current Code Layout
 
 ```
+collector/src/sources/
+  proc.rs          /proc process/resource sampling source helpers
+  session.rs       local Claude/Codex/Gemini/OpenClaw JSONL source helpers
+
+collector/src/view/
+  mod.rs           MaterializedView: query/import facade over materialized data
+  types.rs         query-facing row/snapshot type exports
+
+collector/src/sinks/
+  file_logger.rs   ViewUpdateSink for record/trace JSONL; raw Analyzer for debug
+  otel.rs          ViewUpdateSink for completed LLM calls
+
+collector/src/output/
+  format.rs        CLI formatting and output structs
+  tui.rs           live top TUI rendering
+
 collector/src/framework/storage/
   analyzer.rs      StorageAnalyzer: event-stream analyzer that owns the view
   sqlite.rs        SqliteStore + ViewProjector + ViewUpdateSink rows
-
-collector/src/framework/analyzers/
-  file_logger.rs   raw Analyzer for debug, ViewUpdateSink for record/trace
-  otel_exporter.rs ViewUpdateSink for completed LLM calls
 
 collector/src/cmd_trace.rs
   builds runners/analyzers and attaches view sinks
 
 collector/src/cli_db.rs
   imports ViewUpdate JSONL or legacy raw Event JSONL
-  reads materialized snapshots for report/db commands
+  reads MaterializedView snapshots for report/db commands
 ```
 
 ## Remaining Work
 
 The raw SQL adapter layer is gone and default recording no longer persists raw
-events. The remaining cleanup is command-level consolidation:
+events. The command-facing module split is now in place. The remaining cleanup is
+mostly semantic consolidation inside the view:
 
 - move repeated local-session merge logic out of `cmd_perf.rs` and `cli_db.rs`;
-- make live `top` and stored `stat/report` share the same query-facing view
-  types;
 - optionally split `SqliteStore` into source/sink modules once the command
   layer is thin enough to make that split useful.

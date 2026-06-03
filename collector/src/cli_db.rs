@@ -1,16 +1,19 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-use crate::cli_output::{
+use crate::output::{
     FileAccessSummary, SessionSummary, SummaryStats, print_audit_rows, print_exported_snapshot,
     print_json, print_llm_prompts, print_local_audit, print_replay, print_session_summary,
     print_token_summary, prompt_text_chars,
 };
-use crate::framework::{
-    core::Event,
-    storage::{SnapshotOptions, SqliteStore, ViewProjector, ViewUpdate},
-};
-use crate::local_sessions::{self, LocalSession};
+use crate::sources::session::{self as local_sessions, LocalSession};
+use crate::view::MaterializedView;
+use crate::view::types::{Snapshot, SnapshotOptions};
+
+#[cfg(test)]
+use crate::framework::storage::{SqliteStore, ViewProjector, ViewUpdate};
+#[cfg(test)]
+use crate::view::types::TokenUsageRow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
@@ -24,25 +27,8 @@ pub(crate) fn run_replay(
     input: &str,
     db: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let content = std::fs::read_to_string(input)?;
-    let mut store = SqliteStore::open(db)?;
-    let mut view = ViewProjector::new();
-    let mut inserted = 0usize;
-
-    for (idx, line) in content.lines().enumerate() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if let Ok(update) = serde_json::from_str::<ViewUpdate>(trimmed) {
-            store.apply_view_update(&update)?;
-        } else {
-            let event: Event = serde_json::from_str(trimmed)
-                .map_err(|e| format!("failed to parse JSONL line {}: {}", idx + 1, e))?;
-            store.insert_event(&event, &mut view)?;
-        }
-        inserted += 1;
-    }
+    let mut view = MaterializedView::open_sqlite(db)?;
+    let inserted = view.ingest_jsonl_file(input)?;
 
     print_replay(db, inserted);
     Ok(())
@@ -53,8 +39,8 @@ pub(crate) fn run_token_query(
     group_by: &str,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let store = SqliteStore::open(db)?;
-    let rows = store.token_summary(group_by)?;
+    let view = MaterializedView::open_sqlite(db)?;
+    let rows = view.token_summary(group_by)?;
     if json {
         print_json(&rows)?;
     } else {
@@ -69,8 +55,8 @@ pub(crate) fn run_audit_query(
     limit: usize,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let store = SqliteStore::open(db)?;
-    let rows = store.audit_rows(audit_type, limit)?;
+    let view = MaterializedView::open_sqlite(db)?;
+    let rows = view.audit_rows(audit_type, limit)?;
     if json {
         print_json(&rows)?;
     } else {
@@ -84,8 +70,8 @@ pub(crate) fn run_prompts_query(
     limit: usize,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let store = SqliteStore::open(db)?;
-    let rows = store.llm_call_rows(limit)?;
+    let view = MaterializedView::open_sqlite(db)?;
+    let rows = view.llm_call_rows(limit)?;
     if json {
         print_json(&rows)?;
     } else {
@@ -99,8 +85,8 @@ pub(crate) fn run_export(
     output: &str,
     audit_limit: usize,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let store = SqliteStore::open(db)?;
-    let snapshot = store.export_snapshot(SnapshotOptions { audit_limit })?;
+    let view = MaterializedView::open_sqlite(db)?;
+    let snapshot = view.export_snapshot(SnapshotOptions { audit_limit })?;
     let json = serde_json::to_vec_pretty(&snapshot)?;
     if output == "-" {
         let mut stdout = std::io::stdout().lock();
@@ -115,8 +101,8 @@ pub(crate) fn run_export(
 
 impl SessionSummary {
     pub fn from_sqlite(db: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let mut store = SqliteStore::open(db)?;
-        let snap = store.export_snapshot(SnapshotOptions {
+        let mut view = MaterializedView::open_sqlite(db)?;
+        let snap = view.export_snapshot(SnapshotOptions {
             audit_limit: 50_000,
         })?;
         let local_sessions = local_sessions::from_snapshot(&snap);
@@ -125,7 +111,7 @@ impl SessionSummary {
             (Some(start), Some(end)) if end > start => (end - start) as f64 / 1000.0,
             _ => 0.0,
         };
-        let llm_rows = store.llm_call_rows(50_000)?;
+        let llm_rows = view.llm_call_rows(50_000)?;
         let first_llm_after_ms = s.start_timestamp_ms.and_then(|start| {
             llm_rows
                 .iter()
@@ -146,10 +132,14 @@ impl SessionSummary {
                 llm_latency_ms.add(delta);
             }
         }
-        if !local_sessions.is_empty() {
-            prompt_chars = local_prompt_chars(&local_sessions).unwrap_or(prompt_chars);
+        let local_prompt_chars = local_sessions::prompt_char_counts(&local_sessions);
+        if !local_prompt_chars.is_empty() {
+            prompt_chars = SummaryStats::default();
+            for chars in local_prompt_chars {
+                prompt_chars.add(chars);
+            }
         }
-        let local_model_rows = local_models(&local_sessions);
+        let local_model_rows = local_sessions::model_rows(&local_sessions);
         let models = if local_sessions.iter().any(LocalSession::has_tokens) {
             local_model_rows
         } else {
@@ -218,39 +208,16 @@ impl SessionSummary {
             .into_iter()
             .map(|(endpoint, count)| format!("{endpoint}({count})"))
             .collect();
-        let first_tool_timestamp_ms: Option<u64> = store
-            .connection_mut()
-            .query_row("SELECT MIN(timestamp_ms) FROM tool_calls", [], |row| {
-                row.get::<_, Option<i64>>(0)
-            })?
-            .map(|v| v as u64);
+        let first_tool_timestamp_ms = view.first_tool_timestamp_ms()?;
         let first_tool_after_ms =
             first_tool_timestamp_ms.and_then(|ts| after_start(s.start_timestamp_ms, ts));
-        let mut tool_calls = local_tools(&local_sessions);
+        let mut tool_calls = local_sessions::tool_counts(&local_sessions);
         let mut tool_duration_ms = SummaryStats::default();
         if tool_calls.is_empty() {
-            let mut stmt = store.connection_mut().prepare(
-                "SELECT COALESCE(tool_name, '?'), COUNT(*)
-                 FROM tool_calls
-                 GROUP BY COALESCE(tool_name, '?')
-                 ORDER BY COUNT(*) DESC",
-            )?;
-            let rows = stmt.query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
-            })?;
-            for row in rows {
-                let (name, count) = row?;
-                tool_calls.insert(name, count);
-            }
+            tool_calls = view.tool_counts()?;
         }
-        {
-            let mut stmt = store
-                .connection_mut()
-                .prepare("SELECT duration_ms FROM tool_calls WHERE duration_ms >= 0")?;
-            let rows = stmt.query_map([], |row| row.get::<_, i64>(0))?;
-            for row in rows {
-                tool_duration_ms.add(row? as u64);
-            }
+        for duration_ms in view.tool_durations_ms()? {
+            tool_duration_ms.add(duration_ms);
         }
         Ok(Self {
             source: "agentsight".into(),
@@ -288,7 +255,7 @@ impl SessionSummary {
             first_tool_after_ms: None,
             prompt_chars,
             llm_latency_ms: SummaryStats::default(),
-            models: local_models(std::slice::from_ref(session)),
+            models: local_sessions::model_rows(std::slice::from_ref(session)),
             processes: BTreeMap::new(),
             process_exits: BTreeMap::new(),
             tool_calls: session.tools.clone(),
@@ -301,47 +268,7 @@ impl SessionSummary {
     }
 }
 
-fn local_models(sessions: &[LocalSession]) -> Vec<(String, i64, i64, i64, i64)> {
-    let mut models = BTreeMap::<String, (i64, i64, i64, i64)>::new();
-    for session in sessions {
-        for (model, (input, output, total)) in &session.models {
-            let entry = models.entry(model.clone()).or_default();
-            entry.0 += input;
-            entry.1 += output;
-            entry.2 += total;
-            entry.3 += 1;
-        }
-    }
-    models
-        .into_iter()
-        .map(|(model, (input, output, total, calls))| (model, input, output, total, calls))
-        .collect()
-}
-
-fn local_tools(sessions: &[LocalSession]) -> BTreeMap<String, usize> {
-    let mut tools = BTreeMap::new();
-    for session in sessions {
-        for (tool, count) in &session.tools {
-            *tools.entry(tool.clone()).or_default() += count;
-        }
-    }
-    tools
-}
-
-fn local_prompt_chars(sessions: &[LocalSession]) -> Option<SummaryStats> {
-    let mut stats = SummaryStats::default();
-    for prompt in sessions
-        .iter()
-        .filter_map(|session| session.prompt_preview.as_ref())
-    {
-        stats.add(prompt.chars().count() as u64);
-    }
-    (stats.count > 0).then_some(stats)
-}
-
-fn db_models(
-    snap: &crate::framework::storage::sqlite::Snapshot,
-) -> Vec<(String, i64, i64, i64, i64)> {
+fn db_models(snap: &Snapshot) -> Vec<(String, i64, i64, i64, i64)> {
     let mut models = snap
         .token_summary
         .iter()
@@ -438,7 +365,7 @@ pub(crate) fn count_local_sessions() -> Vec<(&'static str, std::path::PathBuf, u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::framework::storage::TokenUsageRow;
+    use crate::framework::core::Event;
     use serde_json::json;
 
     #[test]
