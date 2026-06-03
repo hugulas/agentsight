@@ -10,6 +10,10 @@ permissions:
   contents: write
   packages: write
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   test:
     name: Build and Test
@@ -260,18 +264,18 @@ jobs:
         grep "^version" collector/Cargo.toml
         grep -q "^version = \"$VERSION_NO_V\"" collector/Cargo.toml
 
-    - name: Rebuild collector from release commit
-      run: |
-        make build
-
-    - name: Verify release snapshot is stable
+    - name: Smoke test local release binary
       run: |
         set -euo pipefail
-        if ! git diff --quiet -- collector/Cargo.toml collector/Cargo.lock collector/vendor; then
-          echo "::error::release build changed committed package inputs."
-          git diff --stat -- collector/Cargo.toml collector/Cargo.lock collector/vendor
-          exit 1
-        fi
+        collector/target/release/agentsight --version
+        collector/target/release/agentsight --help | tee /tmp/agentsight-local-help.txt
+
+        for cmd in stat top record report prompts list discover db debug; do
+          if ! grep -Eq "^[[:space:]]+$cmd[[:space:]]" /tmp/agentsight-local-help.txt; then
+            echo "::error::local release binary is missing '$cmd' in agentsight --help"
+            exit 1
+          fi
+        done
 
     - name: Verify Cargo package
       run: |
@@ -327,3 +331,36 @@ jobs:
 
         cd collector
         cargo publish
+
+    - name: Smoke test cargo install from crates.io
+      env:
+        VERSION: ${{ steps.set_version.outputs.version }}
+      run: |
+        set -euo pipefail
+
+        install_dir="$(mktemp -d)"
+        for attempt in 1 2 3 4 5 6; do
+          if cargo install agentsight \
+            --version "$VERSION" \
+            --locked \
+            --root "$install_dir"; then
+            break
+          fi
+
+          if [ "$attempt" -eq 6 ]; then
+            echo "::error::cargo install agentsight ${VERSION} failed after ${attempt} attempts"
+            exit 1
+          fi
+
+          sleep $((attempt * 10))
+        done
+
+        "$install_dir/bin/agentsight" --version
+        "$install_dir/bin/agentsight" --help | tee /tmp/agentsight-cargo-install-help.txt
+
+        for cmd in stat top record report prompts list discover db debug; do
+          if ! grep -Eq "^[[:space:]]+$cmd[[:space:]]" /tmp/agentsight-cargo-install-help.txt; then
+            echo "::error::cargo-installed agentsight is missing '$cmd' in --help"
+            exit 1
+          fi
+        done
