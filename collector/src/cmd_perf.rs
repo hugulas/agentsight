@@ -3,7 +3,7 @@
 
 use crate::cli_output::{
     AgentTopOutput, AgentTopRow, ResourcePeaks, StatOutput, TopSection, clear_screen,
-    print_agent_top, print_json, print_stat,
+    print_agent_top, print_json, print_stat, print_top_sudo_prompt,
 };
 use crate::framework::binary_extractor::BinaryExtractor;
 use crate::framework::core::Event;
@@ -199,7 +199,7 @@ fn prepare_live_ebpf_privileges() -> Result<Option<String>, String> {
         return Err("live eBPF capture requires sudo; non-interactive top is showing /proc + local sessions only".to_string());
     }
 
-    eprintln!("🔑 top live eBPF capture requires root. Requesting sudo access...");
+    print_top_sudo_prompt();
     let ok = std::process::Command::new("sudo")
         .arg("-v")
         .status()
@@ -1029,6 +1029,7 @@ fn format_compact_i64(value: i64) -> String {
 fn load_stat(db: &str) -> StorageResult<StatOutput> {
     let (snapshot, resources) = load_snapshot_and_resources(db)?;
     let tool_calls = load_tool_calls(db)?;
+    let (input_tokens, output_tokens, total_tokens) = stat_token_totals(&snapshot);
 
     let mut process_execs = 0usize;
     let mut process_exits = 0usize;
@@ -1078,9 +1079,9 @@ fn load_stat(db: &str) -> StorageResult<StatOutput> {
         raw_events: snapshot.summary.raw_events,
         canonical_events: snapshot.summary.canonical_events,
         llm_calls: snapshot.summary.llm_calls,
-        input_tokens: snapshot.summary.input_tokens,
-        output_tokens: snapshot.summary.output_tokens,
-        total_tokens: snapshot.summary.total_tokens,
+        input_tokens,
+        output_tokens,
+        total_tokens,
         process_execs,
         process_exits,
         process_exit_success,
@@ -1092,6 +1093,24 @@ fn load_stat(db: &str) -> StorageResult<StatOutput> {
         tool_calls,
         resources,
     })
+}
+
+fn stat_token_totals(snapshot: &Snapshot) -> (i64, i64, i64) {
+    if snapshot.summary.total_tokens > 0
+        || snapshot.summary.input_tokens > 0
+        || snapshot.summary.output_tokens > 0
+    {
+        return (
+            snapshot.summary.input_tokens,
+            snapshot.summary.output_tokens,
+            snapshot.summary.total_tokens,
+        );
+    }
+
+    let input_tokens = snapshot.sessions.iter().map(|s| s.input_tokens).sum();
+    let output_tokens = snapshot.sessions.iter().map(|s| s.output_tokens).sum();
+    let total_tokens = snapshot.sessions.iter().map(|s| s.total_tokens).sum();
+    (input_tokens, output_tokens, total_tokens)
 }
 
 fn build_session_top<'a>(
@@ -2334,5 +2353,54 @@ mod tests {
         };
 
         assert!(!local_session_can_attach_to_live(&session, &row));
+    }
+
+    #[test]
+    fn stat_tokens_fall_back_to_agent_sessions() {
+        let snapshot = Snapshot {
+            schema_version: 1,
+            generated_at: "now".to_string(),
+            summary: crate::framework::storage::sqlite::SnapshotSummary {
+                source: "sqlite".to_string(),
+                raw_events: 0,
+                canonical_events: 0,
+                llm_calls: 1,
+                token_usage_rows: 0,
+                audit_events: 0,
+                sessions: 1,
+                interruptions: 0,
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                start_timestamp_ms: None,
+                end_timestamp_ms: None,
+                event_limit: 0,
+                audit_limit: 0,
+            },
+            token_summary: Vec::new(),
+            events: Vec::new(),
+            audit_events: Vec::new(),
+            sessions: vec![SessionRow {
+                id: "session-1".to_string(),
+                agent_type: "claude-code".to_string(),
+                agent_name: Some("claude".to_string()),
+                pid: None,
+                comm: None,
+                start_timestamp_ms: 1_000,
+                end_timestamp_ms: Some(2_000),
+                status: "completed".to_string(),
+                model: Some("claude-opus-4-6".to_string()),
+                input_tokens: 3,
+                output_tokens: 10,
+                total_tokens: 27667,
+                adapter_id: "claude-code".to_string(),
+                confidence: Some(0.9),
+                attributes: serde_json::json!({}),
+            }],
+            agents: Vec::new(),
+            interruptions: Vec::new(),
+        };
+
+        assert_eq!(stat_token_totals(&snapshot), (3, 10, 27667));
     }
 }

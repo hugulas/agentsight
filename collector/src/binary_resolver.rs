@@ -8,7 +8,7 @@
 //!     (PATH search, symlink canonicalization, shebang interpreter resolution).
 //!   - [`binary_embeds_ssl`] detects statically-linked TLS (Node.js/OpenClaw).
 //!   - [`parse_container_ref`] + [`resolve_container_binary_path`] map a
-//!     `docker://<container>` reference to the host `/proc/<pid>/exe`.
+//!     `docker://<container>` reference to an explicit host SSL attach target.
 
 /// Resolve a command name/path to the real ELF binary that should be passed
 /// to sslsniff as `--binary-path`.
@@ -194,19 +194,18 @@ pub(crate) fn parse_container_ref(binary_path: &str) -> Option<&str> {
         .filter(|r| !r.is_empty())
 }
 
-/// Resolve a Docker container reference to the host path of the executable
-/// that sslsniff should attach its SSL uprobe to (`/proc/<host-pid>/exe`).
+/// Resolve a Docker container reference to the explicit host path that
+/// sslsniff should attach its SSL uprobe to.
 ///
-/// This works for containerized runtimes that statically link their TLS
-/// library (Node.js / OpenClaw), where there is no in-container `libssl.so`
-/// to scan for. The host PID comes from `docker inspect`, so this requires the
-/// Docker CLI and (typically) root to read the target's `/proc` entries.
+/// This handles both statically-linked TLS runtimes (`/proc/<pid>/exe`, common
+/// for Node.js/OpenClaw) and dynamically-linked OpenSSL (`/proc/<pid>/root/...`
+/// for a loaded `libssl.so`). The host PID comes from `docker inspect`, so this
+/// requires the Docker CLI and permission to read the target's `/proc` entries.
 ///
 /// `docker inspect .State.Pid` returns the container's *init* process, which is
 /// often a wrapper such as `tini` (OpenClaw's image uses `tini -s -- node …`).
 /// That wrapper does not embed SSL, so we walk its descendant process tree and
-/// pick the first process whose `/proc/<pid>/exe` actually embeds SSL (the
-/// `node` process). If none is found we fall back to the init PID's executable.
+/// require an actual SSL target.
 pub(crate) fn resolve_container_binary_path(reference: &str) -> Result<String, String> {
     let output = std::process::Command::new("docker")
         .args(["inspect", "--format", "{{.State.Pid}}", reference])
@@ -237,38 +236,33 @@ pub(crate) fn resolve_container_binary_path(reference: &str) -> Result<String, S
         ));
     }
 
-    let target_pid = find_ssl_pid_in_tree(init_pid).unwrap_or(init_pid);
-    let exe = format!("/proc/{}/exe", target_pid);
-    if target_pid == init_pid {
-        println!(
-            "✓ Resolved container '{}' to host PID {} → {}",
-            reference, target_pid, exe
-        );
-    } else {
-        println!(
-            "✓ Resolved container '{}' (init PID {}) to SSL-embedding host PID {} → {}",
-            reference, init_pid, target_pid, exe
-        );
-    }
-    Ok(exe)
+    find_ssl_target_in_tree(init_pid).ok_or_else(|| {
+        format!(
+            "container '{}' is running at host PID {}, but no SSL attach target was found in its process tree",
+            reference, init_pid
+        )
+    })
 }
 
-/// Breadth-first search the descendant process tree rooted at `root_pid` for the
-/// first process whose `/proc/<pid>/exe` statically embeds SSL. Returns that
-/// PID, or `None` if no descendant (including the root) embeds SSL.
+/// Breadth-first search the descendant process tree rooted at `root_pid` for a
+/// concrete SSL attach path.
 ///
 /// Children are read from `/proc/<pid>/task/<pid>/children`, which lists the
 /// immediate child PIDs of a process. Requires permission to read those entries
 /// (root in practice for containerized processes).
-fn find_ssl_pid_in_tree(root_pid: u32) -> Option<u32> {
+fn find_ssl_target_in_tree(root_pid: u32) -> Option<String> {
     let mut queue = std::collections::VecDeque::from([root_pid]);
     let mut seen = std::collections::HashSet::new();
     while let Some(pid) = queue.pop_front() {
         if !seen.insert(pid) {
             continue;
         }
-        if binary_embeds_ssl(&format!("/proc/{}/exe", pid)) {
-            return Some(pid);
+        let exe = format!("/proc/{}/exe", pid);
+        if binary_embeds_ssl(&exe) {
+            return Some(exe);
+        }
+        if let Some(path) = find_loaded_ssl_library(pid) {
+            return Some(path);
         }
         let children_path = format!("/proc/{}/task/{}/children", pid, pid);
         if let Ok(children) = std::fs::read_to_string(&children_path) {
@@ -278,6 +272,21 @@ fn find_ssl_pid_in_tree(root_pid: u32) -> Option<u32> {
             {
                 queue.push_back(child);
             }
+        }
+    }
+    None
+}
+
+fn find_loaded_ssl_library(pid: u32) -> Option<String> {
+    let maps = std::fs::read_to_string(format!("/proc/{pid}/maps")).ok()?;
+    for line in maps.lines() {
+        let path = line.split_whitespace().last()?;
+        if !path.starts_with('/') || !path.contains("libssl.so") {
+            continue;
+        }
+        let host_path = format!("/proc/{pid}/root{path}");
+        if std::fs::metadata(&host_path).is_ok() {
+            return Some(host_path);
         }
     }
     None

@@ -15,6 +15,55 @@ use tokio::process::Command as TokioCommand;
 /// Type alias for JSON stream
 pub type JsonStream = Pin<Box<dyn Stream<Item = serde_json::Value> + Send>>;
 
+fn preview_line(line: &str, max_chars: usize) -> String {
+    let mut chars = line.chars();
+    let preview: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{preview}...")
+    } else {
+        preview
+    }
+}
+
+struct ProbeProcessGuard {
+    pgid: Option<libc::pid_t>,
+    needs_sudo: bool,
+}
+
+impl ProbeProcessGuard {
+    fn new(pid: Option<u32>, needs_sudo: bool) -> Self {
+        Self {
+            pgid: pid.map(|pid| pid as libc::pid_t),
+            needs_sudo,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.pgid = None;
+    }
+
+    fn terminate(&mut self) {
+        let Some(pgid) = self.pgid.take() else {
+            return;
+        };
+        if self.needs_sudo {
+            let _ = std::process::Command::new("sudo")
+                .args(["-n", "kill", "-TERM", "--", &format!("-{pgid}")])
+                .status();
+        } else {
+            unsafe {
+                libc::killpg(pgid, libc::SIGTERM);
+            }
+        }
+    }
+}
+
+impl Drop for ProbeProcessGuard {
+    fn drop(&mut self) {
+        self.terminate();
+    }
+}
+
 pub fn current_boot_time_ns() -> u64 {
     std::fs::read_to_string("/proc/uptime")
         .ok()
@@ -121,6 +170,7 @@ impl BinaryExecutor {
         };
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         cmd.kill_on_drop(true);
+        cmd.process_group(0);
 
         // Add additional arguments if any
         if !self.additional_args.is_empty() {
@@ -143,7 +193,8 @@ impl BinaryExecutor {
             Box::new(std::io::Error::other("Failed to get stderr")) as RunnerError
         })?;
 
-        if let Some(pid) = child.id() {
+        let child_pid = child.id();
+        if let Some(pid) = child_pid {
             debug!("Binary started with PID: Some({})", pid);
         }
 
@@ -207,8 +258,9 @@ impl BinaryExecutor {
         });
 
         let stream = async_stream::stream! {
+            let mut guard = ProbeProcessGuard::new(child_pid, needs_sudo);
             let mut reader = BufReader::new(stdout);
-            let mut line = String::new();
+            let mut line = Vec::new();
             let mut line_count = 0;
 
             debug!("Reading from binary stdout");
@@ -216,23 +268,18 @@ impl BinaryExecutor {
             loop {
                 line.clear();
 
-                match reader.read_line(&mut line).await {
+                match reader.read_until(b'\n', &mut line).await {
                     Ok(0) => {
                         debug!("Binary stdout closed (EOF)");
                         break;
                     }
                     Ok(_) => {
                         line_count += 1;
-                        let trimmed = line.trim();
+                        let decoded = String::from_utf8_lossy(&line);
+                        let trimmed = decoded.trim();
 
                         if !trimmed.is_empty() {
-                            debug!("Line {}: {}", line_count,
-                                if trimmed.len() > 100 {
-                                    format!("{}...", &trimmed[..100])
-                                } else {
-                                    trimmed.to_string()
-                                }
-                            );
+                            debug!("Line {}: {}", line_count, preview_line(trimmed, 100));
 
                             // Try to parse as JSON
                             if trimmed.starts_with('{') && trimmed.ends_with('}') {
@@ -244,11 +291,7 @@ impl BinaryExecutor {
                                     Err(e) => {
                                         log::warn!("Failed to parse JSON from line {}: {} - Line: {}",
                                             line_count, e,
-                                            if trimmed.len() > 200 {
-                                                format!("{}...", &trimmed[..200])
-                                            } else {
-                                                trimmed.to_string()
-                                            }
+                                            preview_line(trimmed, 200)
                                         );
                                     }
                                 }
@@ -261,91 +304,14 @@ impl BinaryExecutor {
                                 } else {
                                     log::warn!("Skipping non-JSON line {} from binary: {}",
                                         line_count,
-                                        if trimmed.len() > 100 {
-                                            format!("{}...", &trimmed[..100])
-                                        } else {
-                                            trimmed.to_string()
-                                        }
+                                        preview_line(trimmed, 100)
                                     );
                                 }
                             }
                         }
                     }
                     Err(e) => {
-                        // Handle UTF-8 errors gracefully - don't terminate, just warn and continue
-                        if e.kind() == std::io::ErrorKind::InvalidData {
-                            let runner_info = runner_name.as_ref()
-                                .map(|name| format!("[{}] ", name))
-                                .unwrap_or_else(|| format!("[{}] ",
-                                    std::path::Path::new(&binary_path)
-                                        .file_name()
-                                        .and_then(|n| n.to_str())
-                                        .unwrap_or("unknown")
-                                ));
-
-                            // Try to recover partial data up to the invalid UTF-8 sequence
-                            let raw_bytes = line.as_bytes();
-                            let valid_up_to = String::from_utf8_lossy(raw_bytes);
-
-                            // If we have a partial JSON object, try to parse it
-                            if valid_up_to.trim_start().starts_with('{') {
-                                // Find the position of the invalid UTF-8
-                                let mut valid_len = 0;
-                                for i in 0..raw_bytes.len() {
-                                    if std::str::from_utf8(&raw_bytes[0..=i]).is_ok() {
-                                        valid_len = i + 1;
-                                    } else {
-                                        break;
-                                    }
-                                }
-
-                                if valid_len > 0
-                                    && let Ok(valid_str) = std::str::from_utf8(&raw_bytes[0..valid_len]) {
-                                        log::debug!("Recovered {} valid UTF-8 bytes before error", valid_len);
-                                        // Try to parse the valid portion
-                                        if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(valid_str.trim()) {
-                                            log::info!("Successfully recovered partial JSON despite UTF-8 error");
-                                            yield json_value;
-                                            continue;
-                                        }
-                                    }
-                            }
-
-                            // Log detailed error information
-                            let hex_preview = raw_bytes.iter()
-                                .take(64) // Show more context
-                                .map(|b| format!("{:02x}", b))
-                                .collect::<Vec<_>>()
-                                .join(" ");
-
-                            log::warn!(
-                                "{}Invalid UTF-8 at line {} (attempted recovery failed). Hex preview: {}",
-                                runner_info, line_count + 1, hex_preview
-                            );
-
-                            // Clear the line buffer and continue
-                            line.clear();
-                            continue;
-                        } else if e.kind() == std::io::ErrorKind::UnexpectedEof {
-                            // Handle partial reads at EOF gracefully
-                            if !line.is_empty() {
-                                let trimmed = line.trim();
-                                if trimmed.starts_with('{') && trimmed.ends_with('}') {
-                                    // Try to parse incomplete JSON at EOF
-                                    match serde_json::from_str::<serde_json::Value>(trimmed) {
-                                        Ok(json_value) => {
-                                            log::debug!("Parsed final JSON line at EOF");
-                                            yield json_value;
-                                        }
-                                        Err(e) => {
-                                            log::warn!("Failed to parse final line at EOF: {}", e);
-                                        }
-                                    }
-                                }
-                            }
-                            log::debug!("Reached EOF while reading");
-                            break;
-                        } else if e.kind() == std::io::ErrorKind::Interrupted {
+                        if e.kind() == std::io::ErrorKind::Interrupted {
                             // Retry on interrupted system calls
                             log::debug!("Read interrupted, retrying...");
                             continue;
@@ -360,6 +326,7 @@ impl BinaryExecutor {
             log::info!("Terminating binary process");
 
             // Terminate the child process
+            guard.terminate();
             if let Err(e) = child.kill().await {
                 log::warn!("Failed to kill binary process: {}", e);
             }
@@ -368,6 +335,7 @@ impl BinaryExecutor {
             match child.wait().await {
                 Ok(status) => {
                     debug!("Binary process terminated with status: {}", status);
+                    guard.disarm();
                 }
                 Err(e) => {
                     log::warn!("Error waiting for binary process: {}", e);

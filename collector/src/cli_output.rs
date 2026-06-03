@@ -238,6 +238,122 @@ pub(crate) fn clear_screen() {
     print!("\x1b[2J\x1b[H");
 }
 
+pub(crate) fn print_trace_header() {
+    println!("Trace Monitoring");
+    println!("{}", "=".repeat(60));
+}
+
+pub(crate) fn print_trace_ssl_binary_discovered(comm: &str, path: &str) {
+    println!("✓ Auto-discovered statically-linked SSL binary for --comm '{comm}': {path}");
+}
+
+pub(crate) fn print_trace_container_binary_resolved(reference: &str, path: &str) {
+    println!("✓ Resolved container '{reference}' to SSL attach target: {path}");
+}
+
+pub(crate) fn print_trace_start(runners: usize, analyzers: usize) {
+    println!("{}", "=".repeat(60));
+    println!(
+        "Starting flexible trace monitoring with {runners} runners and {analyzers} global analyzers..."
+    );
+    println!("Press Ctrl+C to stop");
+}
+
+pub(crate) fn print_trace_shutdown() {
+    println!("✓ Shutdown requested. Stopping monitoring.");
+}
+
+pub(crate) fn print_web_server_start(url: &str) {
+    println!("Starting web server on {url}");
+}
+
+pub(crate) fn print_web_server_error(error: impl std::fmt::Display) {
+    eprintln!("Web server error: {error}");
+}
+
+pub(crate) fn print_record_header() {
+    println!("AgentSight record");
+    println!("{}", "=".repeat(60));
+}
+
+pub(crate) fn print_record_session_db_error(error: impl std::fmt::Display) {
+    eprintln!("⚠ Could not create session DB ({error}), continuing without it.");
+}
+
+pub(crate) fn print_record_provided_binary_path(path: &str) {
+    println!("→ Using provided binary path: {path}");
+}
+
+pub(crate) fn print_record_auto_binary_path(path: &str) {
+    println!("✓ Auto-discovered binary: {path}");
+}
+
+pub(crate) fn print_record_sudo_prompt() {
+    println!("🔑 eBPF probes require root. Requesting sudo access...");
+}
+
+pub(crate) fn print_top_sudo_prompt() {
+    eprintln!("top live eBPF capture requires sudo. Requesting sudo access...");
+}
+
+pub(crate) fn print_record_drop_user(uid: libc::uid_t, gid: libc::gid_t) {
+    println!("✓ Dropping child to uid={uid} gid={gid}");
+}
+
+pub(crate) fn print_record_attribution_session(pid: u32) {
+    println!("✓ Run attribution session: {pid}");
+}
+
+pub(crate) fn print_record_web_ui(url: &str) {
+    println!("Web UI: {url}");
+}
+
+pub(crate) fn print_record_launch(command: &[String]) {
+    println!("▶ Launching: {}", command.join(" "));
+    println!("{}", "=".repeat(60));
+}
+
+pub(crate) fn print_record_monitoring_stream_ended() {
+    println!("\n⚠ Monitoring stream ended before target exited. Stopping target.");
+}
+
+pub(crate) fn print_record_target_exited(status: impl std::fmt::Display) {
+    println!(
+        "\n{}\n✓ Target exited ({}). Stopping monitoring.",
+        "=".repeat(60),
+        status
+    );
+}
+
+pub(crate) fn print_record_target_wait_error(error: impl std::fmt::Display) {
+    println!("\n⚠ Error waiting on target: {error}");
+}
+
+pub(crate) fn print_record_shutdown() {
+    println!("\n✓ Shutdown requested. Stopping target and monitoring.");
+}
+
+pub(crate) fn print_record_session_summary(summary: &SessionSummary) {
+    println!();
+    print_session_summary(summary);
+}
+
+pub(crate) fn print_record_data_url(url: &str, log_file: &str) {
+    println!("Recorded data remains viewable at {url} (log: {log_file})");
+}
+
+pub(crate) fn print_record_target_status_error(error: impl std::fmt::Display) {
+    println!("⚠ Error checking target status: {error}");
+}
+
+pub(crate) fn print_record_target_shutdown_error(error: impl std::fmt::Display) {
+    println!("⚠ Error waiting for target shutdown: {error}");
+}
+
+pub(crate) fn print_record_kill_error(error: impl std::fmt::Display) {
+    println!("⚠ Failed to kill target process: {error}");
+}
+
 pub(crate) fn print_replay(db: &str, inserted: usize, adapter: Option<&str>) {
     match adapter {
         Some(adapter) => {

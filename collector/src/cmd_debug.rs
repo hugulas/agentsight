@@ -37,8 +37,8 @@ pub(crate) async fn run_raw_ssl(
 
     let mut ssl_runner = SslRunner::from_binary_extractor(binary_extractor.get_sslsniff_path());
 
-    // Translate a `docker://<container>` binary path to the host /proc/<pid>/exe
-    // of the container's SSL-embedding process (see resolve_container_binary_path).
+    // Translate a `docker://<container>` binary path to the explicit host-side
+    // SSL attach target (see resolve_container_binary_path).
     let container_resolved: Option<String> = match binary_path.and_then(parse_container_ref) {
         Some(reference) => {
             Some(resolve_container_binary_path(reference).map_err(RunnerError::from)?)

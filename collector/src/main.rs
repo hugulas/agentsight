@@ -33,10 +33,13 @@ use cli_db::{
     run_export, run_prompts_query, run_replay, run_token_query,
 };
 use cli_discover::run_discover;
+use cli_output::print_record_session_db_error;
 use cmd_debug::{run_raw_process, run_raw_ssl, run_raw_stdio, run_system};
 use cmd_exec::{default_session_db_path, print_session_summary, run_exec};
 use cmd_perf::{TopOptions, run_live_top_query, run_live_top_tui, run_stat_query, run_top_query};
-use cmd_trace::{OtelConfig, TraceConfig, convert_runner_error, run_trace};
+use cmd_trace::{
+    DEFAULT_RECORD_STDIO_MAX_BYTES, OtelConfig, TraceConfig, convert_runner_error, run_trace,
+};
 use framework::{
     analyzers::{print_global_http_filter_metrics, print_global_ssl_filter_metrics},
     binary_extractor::BinaryExtractor,
@@ -60,19 +63,43 @@ fn interactive_terminal_available() -> bool {
     unsafe { libc::isatty(libc::STDIN_FILENO) == 1 && libc::isatty(libc::STDOUT_FILENO) == 1 }
 }
 
-async fn setup_signal_handler() {
+fn command_uses_live_top_tui(cli: &Cli) -> bool {
+    matches!(
+        &cli.command,
+        Commands::Top {
+            db: None,
+            count: None,
+            once: false,
+            plain: false,
+            ..
+        } if interactive_terminal_available()
+    )
+}
+
+fn init_logging(suppress_terminal_output: bool) {
+    let mut builder = env_logger::Builder::from_default_env();
+    builder.filter_level(log::LevelFilter::Warn);
+    if suppress_terminal_output {
+        builder.target(env_logger::Target::Pipe(Box::new(std::io::sink())));
+    }
+    let _ = builder.try_init();
+}
+
+async fn setup_signal_handler(suppress_terminal_output: bool) {
     let mut sigint = signal::unix::signal(signal::unix::SignalKind::interrupt())
         .expect("Failed to install SIGINT handler");
 
     tokio::spawn(async move {
         sigint.recv().await;
-        println!("\n\nReceived SIGINT, shutting down...");
+        if !suppress_terminal_output {
+            println!("\n\nReceived SIGINT, shutting down...");
 
-        // Print HTTP filter metrics using the global function
-        print_global_http_filter_metrics();
+            // Print HTTP filter metrics using the global function
+            print_global_http_filter_metrics();
 
-        // Print SSL filter metrics using the global function
-        print_global_ssl_filter_metrics();
+            // Print SSL filter metrics using the global function
+            print_global_ssl_filter_metrics();
+        }
 
         SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
         shutdown_notify().notify_waiters();
@@ -604,15 +631,12 @@ async fn main() {
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Keep command output clean by default; RUST_LOG can opt into info/debug logs.
-    env_logger::Builder::from_default_env()
-        .filter_level(log::LevelFilter::Warn)
-        .init();
-
     let cli = Cli::parse();
+    let suppress_terminal_output = command_uses_live_top_tui(&cli);
+    init_logging(suppress_terminal_output);
 
     // Setup signal handler for graceful shutdown
-    setup_signal_handler().await;
+    setup_signal_handler(suppress_terminal_output).await;
 
     // Handle commands that don't need the binary extractor first.
     match &cli.command {
@@ -816,10 +840,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         Some(path)
                     }
                     Err(e) => {
-                        eprintln!(
-                            "⚠ Could not create session DB ({}), continuing without it.",
-                            e
-                        );
+                        print_record_session_db_error(e);
                         None
                     }
                 },
@@ -835,7 +856,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 ssl_http: true,
                 process: true,
                 stdio: pid.is_some(),
-                stdio_max_bytes: 8192,
+                stdio_max_bytes: DEFAULT_RECORD_STDIO_MAX_BYTES,
                 system: true,
                 system_interval: 2,
                 http_filter: vec!["request.path_prefix=/v1/rgstr | response.status_code=202 | request.method=HEAD | response.body=".to_string()],

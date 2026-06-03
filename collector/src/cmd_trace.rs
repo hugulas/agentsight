@@ -7,7 +7,11 @@ use crate::binary_resolver::{
     binary_embeds_ssl, parse_container_ref, resolve_binary_path, resolve_container_binary_path,
 };
 use crate::cli_db::run_capture_adapters;
-use crate::cli_output::print_event_json;
+use crate::cli_output::{
+    print_event_json, print_trace_container_binary_resolved, print_trace_header,
+    print_trace_shutdown, print_trace_ssl_binary_discovered, print_trace_start,
+    print_web_server_error, print_web_server_start,
+};
 use crate::framework::{
     analyzers::{
         AuthHeaderRemover, FileLogger, HTTPFilter, HTTPParser, OtelExporter, SSEProcessor,
@@ -24,6 +28,7 @@ use crate::procfs::{PidSeed, ProcSnapshot};
 use crate::server::WebServer;
 
 pub(crate) const DEFAULT_SERVER_LISTEN: &str = "127.0.0.1";
+pub(crate) const DEFAULT_RECORD_STDIO_MAX_BYTES: u32 = 65_536;
 
 pub(crate) struct StartedWebServer {
     pub(crate) url: String,
@@ -369,18 +374,21 @@ pub(crate) async fn run_trace(
     binary_extractor: &BinaryExtractor,
     mut cfg: TraceConfig,
 ) -> Result<(), RunnerError> {
-    println!("Trace Monitoring");
-    println!("{}", "=".repeat(60));
+    print_trace_header();
 
     // A `--binary-path docker://<container>` (or `docker:<container>`) reference
-    // is translated to the host-side /proc/<host-pid>/exe of the container's
-    // main process. This is the out-of-the-box path for containerized agents
-    // such as OpenClaw, which is Node.js with a statically-linked OpenSSL --- so
-    // there is no in-container libssl.so to scan, and sslsniff must attach its
-    // uprobe directly to the node binary via /proc/<pid>/exe.
-    if let Some(reference) = cfg.binary_path.as_deref().and_then(parse_container_ref) {
-        cfg.binary_path =
-            Some(resolve_container_binary_path(reference).map_err(RunnerError::from)?);
+    // is translated in Rust to an explicit host-side SSL attach target. The C
+    // sslsniff binary only consumes that path; it does not scan container
+    // process maps itself.
+    if let Some(reference) = cfg
+        .binary_path
+        .as_deref()
+        .and_then(parse_container_ref)
+        .map(str::to_string)
+    {
+        let resolved = resolve_container_binary_path(&reference).map_err(RunnerError::from)?;
+        print_trace_container_binary_resolved(&reference, &resolved);
+        cfg.binary_path = Some(resolved);
     }
 
     // When the user enabled SSL but didn't pin a --binary-path, try to discover
@@ -397,11 +405,7 @@ pub(crate) async fn run_trace(
             .and_then(|c| resolve_binary_path(c).ok())
             .filter(|p| binary_embeds_ssl(p));
         if let Some(p) = resolved {
-            println!(
-                "✓ Auto-discovered statically-linked SSL binary for --comm '{}': {}",
-                cfg.comm.as_deref().unwrap_or(""),
-                p
-            );
+            print_trace_ssl_binary_discovered(cfg.comm.as_deref().unwrap_or(""), &p);
             cfg.binary_path = Some(p);
         }
     }
@@ -420,13 +424,7 @@ pub(crate) async fn run_trace(
     prepare_process_seeds(&mut cfg)?;
     let mut agent = build_trace_agent(binary_extractor, &cfg)?;
 
-    println!("{}", "=".repeat(60));
-    println!(
-        "Starting flexible trace monitoring with {} runners and {} global analyzers...",
-        agent.runner_count(),
-        agent.analyzer_count()
-    );
-    println!("Press Ctrl+C to stop");
+    print_trace_start(agent.runner_count(), agent.analyzer_count());
 
     // Start web server if enabled
     let _server_handle = start_web_server_if_enabled(
@@ -479,11 +477,11 @@ pub(crate) async fn start_web_server_if_enabled(
         listen
     };
     let url = format!("http://{}:{}/", host, port);
-    println!("Starting web server on {}", url);
+    print_web_server_start(&url);
 
     let server_handle = tokio::spawn(async move {
         if let Err(e) = web_server.start(addr).await {
-            eprintln!("Web server error: {}", e);
+            print_web_server_error(e);
         }
     });
 
@@ -511,7 +509,7 @@ pub(crate) async fn drive_stream_until_shutdown(stream: &mut EventStream, print_
                 }
             }
             _ = shutdown.notified() => {
-                println!("✓ Shutdown requested. Stopping monitoring.");
+                print_trace_shutdown();
                 break;
             }
         }

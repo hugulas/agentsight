@@ -33,6 +33,8 @@ fn sudo_available() -> bool {
 fn run_agentsight(args: &[&str]) -> Output {
     let path = std::env::var("PATH").unwrap_or_default();
     let home = std::env::var("HOME").unwrap_or_default();
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir.parent().unwrap_or(manifest_dir);
     let mut command = Command::new("sudo");
     command
         .args(["-n", "env"])
@@ -53,6 +55,7 @@ fn run_agentsight(args: &[&str]) -> Output {
     command
         .arg(env!("CARGO_BIN_EXE_agentsight"))
         .args(args)
+        .current_dir(repo_root)
         .output()
         .expect("agentsight command should run")
 }

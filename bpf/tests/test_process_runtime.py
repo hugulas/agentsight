@@ -272,34 +272,6 @@ def test_trace_net_summary_events():
         sess.cleanup()
 
 
-def test_trace_resources_samples_target():
-    target = subprocess.Popen(["/bin/sleep", "4"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    sess = None
-    try:
-        sess = TracerSession(
-            "-m",
-            "2",
-            "-p",
-            str(target.pid),
-            *seed_pid_arg(target.pid),
-            "--trace-resources",
-            "--sample-interval",
-            "250",
-            wait_attach=0.8,
-        )
-        time.sleep(1.2)
-        sess.stop()
-        samples = [event for event in sess.events() if event.get("event") == "RESOURCE_SAMPLE"]
-        assert_true(len(samples) >= 2, f"expected at least 2 RESOURCE_SAMPLE events, got {len(samples)}")
-        for field in ("target_pid", "total_rss_kb", "num_processes"):
-            assert_true(field in samples[0], f"RESOURCE_SAMPLE missing {field}")
-    finally:
-        if sess:
-            sess.cleanup()
-        target.terminate()
-        target.wait(timeout=5)
-
-
 TESTS = [
     test_json_escaping_exec,
     test_pid_filter_tracks_target_tree_only,
@@ -307,7 +279,6 @@ TESTS = [
     test_filter_mode_without_selector_does_not_fallback,
     test_trace_fs_summary_events,
     test_trace_net_summary_events,
-    test_trace_resources_samples_target,
 ]
 
 

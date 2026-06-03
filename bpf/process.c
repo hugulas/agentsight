@@ -17,7 +17,6 @@
 #include "process_filter.h"
 #include "container_info.h"
 #include "process_ext/map_flush.h"
-#include "process_ext/resource_sampler.h"
 #include "process_ext/userspace.h"
 
 #define MAX_COMMAND_LIST 256
@@ -75,10 +74,6 @@ static struct env {
 	bool trace_signals;
 	bool trace_mem;
 	bool trace_cow;
-	bool trace_resources;
-	bool resource_detail;
-	int sample_interval_ms;
-	char cgroup_path[256];
 	char cgroup_filter_path[256];
 	bool cgroup_filter_enabled;
 	bool cgroup_filter_children;
@@ -90,7 +85,6 @@ static struct env {
 	.filter_mode = FILTER_MODE_PROC,
 	.pid = 0,
 	.session_id = 0,
-	.sample_interval_ms = 1000
 };
 
 /* Global PID tracker for userspace filtering */
@@ -101,7 +95,6 @@ static int g_tracked_cgroups_fd = -1;
 static int g_overflow_fd = -1;
 static int g_exit_mem_fd = -1;
 static long page_size_kb;
-static pid_t g_resource_target_pid = 0;
 
 const char *argp_program_version = "process-tracer 1.0";
 const char *argp_program_bug_address = "<bpf@vger.kernel.org>";
@@ -113,8 +106,7 @@ const char argp_program_doc[] =
 	"\n"
 	"USAGE: ./process [-d <min-duration-ms>] [-c <command1,command2,...>] [-p <pid>] [--session <sid>] [-m <mode>] [-v]\n"
 	"       [--trace-fs] [--trace-net] [--trace-signals] [--trace-mem] [--trace-cow] [--trace-all]\n"
-	"       [--trace-resources] [--resource-detail] [--sample-interval <ms>]\n"
-	"       [--cgroup <path>] [--cgroup-filter <path>] [--cgroup-filter-children] [--seed-pid <pid:ppid>]\n"
+	"       [--cgroup-filter <path>] [--cgroup-filter-children] [--seed-pid <pid:ppid>]\n"
 	"\n"
 	"FILTER MODES:\n"
 	"  0 (all):    Trace all processes and all read/write operations\n"
@@ -138,10 +130,6 @@ enum {
 	OPT_TRACE_MEM,
 	OPT_TRACE_COW,
 	OPT_TRACE_ALL,
-	OPT_TRACE_RESOURCES,
-	OPT_RESOURCE_DETAIL,
-	OPT_SAMPLE_INTERVAL,
-	OPT_CGROUP,
 	OPT_CGROUP_FILTER,
 	OPT_CGROUP_FILTER_CHILDREN,
 	OPT_SEED_PID,
@@ -161,10 +149,6 @@ static const struct argp_option opts[] = {
 	{ "trace-mem", OPT_TRACE_MEM, NULL, 0, "Trace shared memory mappings (mmap MAP_SHARED)" },
 	{ "trace-cow", OPT_TRACE_COW, NULL, 0, "Trace CoW page faults (kprobe/do_wp_page, high overhead)" },
 	{ "trace-all", OPT_TRACE_ALL, NULL, 0, "Enable all tracing except --trace-cow" },
-	{ "trace-resources", OPT_TRACE_RESOURCES, NULL, 0, "Sample memory/CPU periodically for tracked processes" },
-	{ "resource-detail", OPT_RESOURCE_DETAIL, NULL, 0, "Also output per-process resource detail (requires --trace-resources)" },
-	{ "sample-interval", OPT_SAMPLE_INTERVAL, "MS", 0, "Resource sampling interval in milliseconds (default: 1000)" },
-	{ "cgroup", OPT_CGROUP, "PATH", 0, "Cgroup v2 path for resource sampling" },
 	{ "cgroup-filter", OPT_CGROUP_FILTER, "PATH", 0, "Hard filter by cgroup v2 path" },
 	{ "cgroup-filter-children", OPT_CGROUP_FILTER_CHILDREN, NULL, 0, "Include descendants of --cgroup-filter path" },
 	{ "seed-pid", OPT_SEED_PID, "PID[:PPID]", 0, "Seed an existing tracked PID supplied by the collector" },
@@ -295,21 +279,6 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		env.trace_net = true;
 		env.trace_signals = true;
 		env.trace_mem = true;
-		break;
-	case OPT_TRACE_RESOURCES:
-		env.trace_resources = true;
-		break;
-	case OPT_RESOURCE_DETAIL:
-		env.resource_detail = true;
-		break;
-	case OPT_SAMPLE_INTERVAL:
-		env.sample_interval_ms = atoi(arg);
-		if (env.sample_interval_ms < 10)
-			env.sample_interval_ms = 10;
-		break;
-	case OPT_CGROUP:
-		strncpy(env.cgroup_path, arg, sizeof(env.cgroup_path) - 1);
-		env.cgroup_path[sizeof(env.cgroup_path) - 1] = '\0';
 		break;
 	case OPT_CGROUP_FILTER:
 		strncpy(env.cgroup_filter_path, arg, sizeof(env.cgroup_filter_path) - 1);
@@ -822,12 +791,6 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 				pid_tracker_add(tracker, e->pid, e->ppid);
 				add_tracked_pid_to_bpf(e->pid);
 
-				if (env.trace_resources && g_resource_target_pid == 0) {
-					g_resource_target_pid = e->pid;
-					if (env.cgroup_path[0] == '\0')
-						detect_cgroup_path(e->pid, env.cgroup_path, sizeof(env.cgroup_path));
-				}
-
 				print_exec_event(e);
 			} else if (tracker->filter_mode == FILTER_MODE_FILTER) {
 				break;
@@ -1006,25 +969,13 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	if (env.trace_resources && env.pid > 0)
-		g_resource_target_pid = env.pid;
-
-	if (env.trace_resources && !env.cgroup_path[0]) {
-		pid_t detect_pid = env.pid > 0 ? env.pid : getpid();
-		if (detect_cgroup_path(detect_pid, env.cgroup_path, sizeof(env.cgroup_path)) && env.verbose)
-			fprintf(stderr, "Auto-detected cgroup: %s\n", env.cgroup_path);
-	}
-
 	uint64_t last_flush_time = 0;
-	uint64_t last_sample_ms = 0;
 	uint64_t last_cgroup_refresh_time = 0;
 	print_clock_sync_anchor("start");
 
 	/* Process events */
 	while (!exiting) {
 		int poll_ms = POLL_TIMEOUT_MS;
-		if (env.trace_resources && env.sample_interval_ms < poll_ms)
-			poll_ms = env.sample_interval_ms;
 
 		err = ring_buffer__poll(rb, poll_ms);
 		/* Ctrl-C will cause -EINTR */
@@ -1055,16 +1006,6 @@ int main(int argc, char **argv)
 			last_flush_time = now;
 		}
 
-		if (env.trace_resources && g_resource_target_pid > 0) {
-			struct timespec ts;
-			clock_gettime(CLOCK_MONOTONIC, &ts);
-			uint64_t now_ms = (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-			if (now_ms - last_sample_ms >= (uint64_t)env.sample_interval_ms) {
-				sample_resources(g_resource_target_pid, page_size_kb,
-						 env.resource_detail, env.cgroup_path);
-				last_sample_ms = now_ms;
-			}
-		}
 	}
 
 	if (g_agg_map_fd >= 0)

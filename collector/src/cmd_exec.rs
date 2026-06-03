@@ -3,12 +3,19 @@
 
 use futures::stream::StreamExt;
 
-use crate::binary_resolver::resolve_binary_path;
+use crate::binary_resolver::{binary_embeds_ssl, resolve_binary_path};
 use crate::cli_db::run_capture_adapters;
-use crate::cli_output::{SessionSummary, print_session_summary as print_summary};
+use crate::cli_output::{
+    SessionSummary, print_record_attribution_session, print_record_auto_binary_path,
+    print_record_data_url, print_record_drop_user, print_record_header, print_record_kill_error,
+    print_record_launch, print_record_monitoring_stream_ended, print_record_provided_binary_path,
+    print_record_session_db_error, print_record_session_summary, print_record_shutdown,
+    print_record_sudo_prompt, print_record_target_exited, print_record_target_shutdown_error,
+    print_record_target_status_error, print_record_target_wait_error, print_record_web_ui,
+};
 use crate::cmd_trace::{
-    TraceConfig, build_trace_agent, drain_stream_for, prepare_process_seeds,
-    start_web_server_if_enabled,
+    DEFAULT_RECORD_STDIO_MAX_BYTES, TraceConfig, build_trace_agent, drain_stream_for,
+    prepare_process_seeds, start_web_server_if_enabled,
 };
 use crate::framework::{
     analyzers::{print_global_http_filter_metrics, print_global_ssl_filter_metrics},
@@ -49,8 +56,7 @@ pub(crate) fn default_session_db_path() -> Result<String, RunnerError> {
 
 pub(crate) fn print_session_summary(db_path: &str) {
     if let Ok(summary) = SessionSummary::from_sqlite(db_path) {
-        println!();
-        print_summary(&summary);
+        print_record_session_summary(&summary);
     }
 }
 
@@ -83,30 +89,31 @@ pub(crate) async fn run_exec(
                 (Some(p), Some(adapter.unwrap_or("auto")))
             }
             Err(e) => {
-                eprintln!(
-                    "⚠ Could not create session DB ({}), continuing without it.",
-                    e
-                );
+                print_record_session_db_error(e);
                 (None, adapter)
             }
         }
     };
 
-    println!("AgentSight record");
-    println!("{}", "=".repeat(60));
+    print_record_header();
 
     let binary_path = match binary_path_override {
         Some(p) => {
-            println!("→ Using provided binary path: {}", p);
+            print_record_provided_binary_path(p);
             p.to_string()
         }
         None => {
             let p = resolve_binary_path(program).map_err(|e| {
                 RunnerError::from(format!("failed to resolve '{}': {}", program, e))
             })?;
-            println!("✓ Auto-discovered binary: {}", p);
+            print_record_auto_binary_path(&p);
             p
         }
+    };
+    let ssl_binary_path = if binary_path_override.is_some() || binary_embeds_ssl(&binary_path) {
+        Some(binary_path)
+    } else {
+        None
     };
 
     // When not running as root, warm the sudo credential cache so the
@@ -121,7 +128,7 @@ pub(crate) async fn run_exec(
             .map(|s| s.success())
             .unwrap_or(false);
         if !has_cached {
-            println!("🔑 eBPF probes require root. Requesting sudo access...");
+            print_record_sudo_prompt();
             let ok = std::process::Command::new("sudo")
                 .arg("true")
                 .status()
@@ -145,7 +152,7 @@ pub(crate) async fn run_exec(
         .args(prog_args);
     let target_ids = target_user_ids();
     if let Some((uid, gid)) = target_ids {
-        println!("✓ Dropping child to uid={} gid={}", uid, gid);
+        print_record_drop_user(uid, gid);
     }
     unsafe {
         command_builder.pre_exec(move || {
@@ -170,7 +177,7 @@ pub(crate) async fn run_exec(
     let child_pid = child
         .id()
         .ok_or_else(|| RunnerError::from("failed to get target child PID"))?;
-    println!("✓ Run attribution session: {}", child_pid);
+    print_record_attribution_session(child_pid);
 
     let db_path_for_adapters = db_path.clone();
     let mut cfg = TraceConfig {
@@ -181,11 +188,11 @@ pub(crate) async fn run_exec(
         ssl_http: true,
         process: true,
         stdio: true,
-        stdio_max_bytes: 8192,
+        stdio_max_bytes: DEFAULT_RECORD_STDIO_MAX_BYTES,
         system: true,
         system_interval: 2,
         http_filter: vec!["request.path_prefix=/v1/rgstr | response.status_code=202 | request.method=HEAD | response.body=".to_string()],
-        binary_path: Some(binary_path),
+        binary_path: ssl_binary_path,
         log_file: log_file.to_string(),
         db_path,
         adapter: adapter.map(str::to_string),
@@ -218,10 +225,9 @@ pub(crate) async fn run_exec(
     };
 
     if let Some(server) = &server_handle {
-        println!("Web UI: {}", server.url);
+        print_record_web_ui(&server.url);
     }
-    println!("▶ Launching: {}", command.join(" "));
-    println!("{}", "=".repeat(60));
+    print_record_launch(command);
 
     tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
     if let Err(e) = continue_child(child_pid) {
@@ -238,7 +244,7 @@ pub(crate) async fn run_exec(
                 match maybe_event {
                     Some(_event) => {} // drive the stream; events are persisted via the file logger
                     None => {
-                        println!("\n⚠ Monitoring stream ended before target exited. Stopping target.");
+                        print_record_monitoring_stream_ended();
                         break;
                     }
                 }
@@ -246,16 +252,16 @@ pub(crate) async fn run_exec(
             status = child.wait() => {
                 match status {
                     Ok(s) => {
-                        println!("\n{}\n✓ Target exited ({}). Stopping monitoring.", "=".repeat(60), s);
+                        print_record_target_exited(s);
                     }
-                    Err(e) => println!("\n⚠ Error waiting on target: {}", e),
+                    Err(e) => print_record_target_wait_error(e),
                 }
                 target_exited = true;
                 drain_stream_for(&mut stream, tokio::time::Duration::from_millis(5000)).await;
                 break;
             }
             _ = shutdown.notified() => {
-                println!("\n✓ Shutdown requested. Stopping target and monitoring.");
+                print_record_shutdown();
                 break;
             }
         }
@@ -275,10 +281,7 @@ pub(crate) async fn run_exec(
     }
 
     if let Some(server) = &server_handle {
-        println!(
-            "Recorded data remains viewable at {} (log: {})",
-            server.url, log_file
-        );
+        print_record_data_url(&server.url, log_file);
     }
 
     Ok(db_path_for_adapters)
@@ -302,7 +305,7 @@ pub(crate) async fn stop_child(child: &mut tokio::process::Child) {
         Ok(Some(_)) => return,
         Ok(None) => {}
         Err(e) => {
-            println!("⚠ Error checking target status: {}", e);
+            print_record_target_status_error(e);
             return;
         }
     }
@@ -310,13 +313,13 @@ pub(crate) async fn stop_child(child: &mut tokio::process::Child) {
     match tokio::time::timeout(tokio::time::Duration::from_secs(2), child.wait()).await {
         Ok(Ok(_)) => return,
         Ok(Err(e)) => {
-            println!("⚠ Error waiting for target shutdown: {}", e);
+            print_record_target_shutdown_error(e);
             return;
         }
         Err(_) => {}
     }
 
     if let Err(e) = child.kill().await {
-        println!("⚠ Failed to kill target process: {}", e);
+        print_record_kill_error(e);
     }
 }

@@ -16,6 +16,7 @@ use crate::framework::{
 use clap::Subcommand;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
+use std::path::Path;
 
 #[derive(Subcommand)]
 pub(crate) enum AdapterCommand {
@@ -171,8 +172,195 @@ pub(crate) fn run_capture_adapters(
     run_sql_adapters(&mut store, adapter).map_err(|e| {
         RunnerError::from(format!("failed to run SQL adapter '{}': {}", adapter, e))
     })?;
+    project_local_sessions_from_audit(&mut store)
+        .map_err(|e| RunnerError::from(format!("failed to project local session logs: {}", e)))?;
     print_capture_adapters(db_path, adapter);
     Ok(())
+}
+
+fn project_local_sessions_from_audit(
+    store: &mut SqliteStore,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let rows = {
+        let mut stmt = store.connection_mut().prepare(
+            "SELECT target, MIN(timestamp_ms), MAX(timestamp_ms)
+             FROM audit_events
+             WHERE audit_type = 'file'
+               AND target IS NOT NULL
+               AND (target LIKE '%/.claude/%jsonl' OR target LIKE '%/.codex/%jsonl')
+             GROUP BY target",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+
+    for (path, start_ms, end_ms) in rows {
+        let Some(source) = local_session_source(&path) else {
+            continue;
+        };
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let parsed = parse_local_session(source, &content);
+        project_local_session(store, source, &path, start_ms, end_ms, &parsed)?;
+    }
+    Ok(())
+}
+
+fn project_local_session(
+    store: &mut SqliteStore,
+    source: &str,
+    path: &str,
+    start_ms: i64,
+    end_ms: i64,
+    parsed: &serde_json::Value,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let Some(models) = parsed.get("models").and_then(|value| value.as_object()) else {
+        return Ok(());
+    };
+    if models.is_empty() {
+        return Ok(());
+    }
+
+    let session_key = Path::new(path)
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("session");
+    let session_id = format!("local-{source}-{session_key}");
+    let agent_type = match source {
+        "claude" => "claude-code",
+        "codex" => "codex",
+        _ => source,
+    };
+    let adapter_id = format!("{source}-local-log");
+    let mut model_rows = Vec::new();
+    let mut input_total = 0;
+    let mut output_total = 0;
+    let mut token_total = 0;
+
+    for (model, usage) in models {
+        let Some(values) = usage.as_array() else {
+            continue;
+        };
+        let input = json_i64(values.first());
+        let output = json_i64(values.get(1));
+        let total = json_i64(values.get(2));
+        if input == 0 && output == 0 && total == 0 {
+            continue;
+        }
+        input_total += input;
+        output_total += output;
+        token_total += total;
+        model_rows.push((model.clone(), input, output, total));
+    }
+    if model_rows.is_empty() {
+        return Ok(());
+    }
+
+    let top_model = model_rows
+        .iter()
+        .max_by_key(|(_, _, _, total)| *total)
+        .map(|(model, _, _, _)| model.as_str())
+        .unwrap_or(agent_type);
+    let attrs = serde_json::json!({
+        "projection": "local-session-jsonl",
+        "path": path,
+    })
+    .to_string();
+
+    store.connection_mut().execute(
+        "INSERT OR REPLACE INTO agent_sessions (
+            id, agent_type, agent_name, start_timestamp_ms, end_timestamp_ms,
+            status, model, input_tokens, output_tokens, total_tokens,
+            adapter_id, confidence, attributes_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, 'completed', ?6, ?7, ?8, ?9, ?10, 0.95, ?11)",
+        rusqlite::params![
+            &session_id,
+            agent_type,
+            source,
+            start_ms,
+            end_ms,
+            top_model,
+            input_total,
+            output_total,
+            token_total,
+            &adapter_id,
+            attrs,
+        ],
+    )?;
+
+    for (idx, (model, input, output, total)) in model_rows.iter().enumerate() {
+        store.connection_mut().execute(
+            "INSERT OR REPLACE INTO token_usage (
+                id, llm_call_id, timestamp_ms, pid, comm, provider, model,
+                input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+                total_tokens, source, adapter_id, confidence
+             ) VALUES (?1, NULL, ?2, NULL, ?3, ?4, ?5, ?6, ?7, 0, 0, ?8, 'local_session_jsonl', ?9, 0.95)",
+            rusqlite::params![
+                format!("local-token-{source}-{session_key}-{idx}"),
+                end_ms,
+                source,
+                source,
+                model,
+                input,
+                output,
+                total,
+                &adapter_id,
+            ],
+        )?;
+    }
+
+    if let Some(tools) = parsed.get("tools").and_then(|value| value.as_object()) {
+        let tool_adapter_id = agent_type;
+        for (tool_name, count) in tools {
+            let count = json_i64(Some(count)).max(0);
+            for idx in 0..count {
+                store.connection_mut().execute(
+                    "INSERT OR REPLACE INTO tool_calls (
+                        id, session_id, conversation_id, timestamp_ms,
+                        start_timestamp_ms, end_timestamp_ms, duration_ms,
+                        tool_name, tool_call_id, status, input_json, output_json,
+                        related_pid, related_event_id, adapter_id, confidence
+                     ) VALUES (
+                        ?1, ?2, NULL, ?3, NULL, NULL, NULL,
+                        ?4, NULL, 'observed', NULL, NULL,
+                        NULL, NULL, ?5, 0.95
+                     )",
+                    rusqlite::params![
+                        format!("local-tool-{source}-{session_key}-{tool_name}-{idx}"),
+                        session_id,
+                        end_ms,
+                        tool_name,
+                        tool_adapter_id,
+                    ],
+                )?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn local_session_source(path: &str) -> Option<&'static str> {
+    if path.contains("/.claude/") {
+        Some("claude")
+    } else if path.contains("/.codex/") {
+        Some("codex")
+    } else {
+        None
+    }
+}
+
+fn json_i64(value: Option<&serde_json::Value>) -> i64 {
+    value
+        .and_then(|value| value.as_i64().or_else(|| value.as_u64().map(|v| v as i64)))
+        .unwrap_or(0)
 }
 
 fn run_adapters_on_db(
@@ -240,7 +428,7 @@ impl SessionSummary {
                 llm_latency_ms.add(delta);
             }
         }
-        let models = snap
+        let mut models = snap
             .token_summary
             .iter()
             .map(|r| {
@@ -252,7 +440,36 @@ impl SessionSummary {
                     r.calls,
                 )
             })
-            .collect();
+            .collect::<Vec<_>>();
+        if models
+            .iter()
+            .all(|(_, input, output, total, _)| *input == 0 && *output == 0 && *total == 0)
+        {
+            let mut session_models = BTreeMap::<String, (i64, i64, i64, i64)>::new();
+            for session in &snap.sessions {
+                if session.input_tokens == 0
+                    && session.output_tokens == 0
+                    && session.total_tokens == 0
+                {
+                    continue;
+                }
+                let model = session
+                    .model
+                    .as_ref()
+                    .filter(|model| !model.is_empty())
+                    .cloned()
+                    .unwrap_or_else(|| session.agent_type.clone());
+                let entry = session_models.entry(model).or_default();
+                entry.0 += session.input_tokens;
+                entry.1 += session.output_tokens;
+                entry.2 += session.total_tokens;
+                entry.3 += 1;
+            }
+            models = session_models
+                .into_iter()
+                .map(|(model, (input, output, total, calls))| (model, input, output, total, calls))
+                .collect();
+        }
         let mut processes = BTreeMap::new();
         for row in &snap.audit_events {
             if row.action.as_deref() == Some("exec") {
@@ -755,6 +972,91 @@ mod tests {
                 .endpoints
                 .contains(&"api.anthropic.com/v1/messages(2)".to_string())
         );
+    }
+
+    #[test]
+    fn sqlite_summary_uses_agent_session_tokens_when_token_usage_is_empty() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = temp.path().join("session-tokens.db");
+        let mut store = SqliteStore::open(&db).unwrap();
+
+        store
+            .connection_mut()
+            .execute(
+                "INSERT INTO agent_sessions (
+                    id, agent_type, agent_name, start_timestamp_ms, end_timestamp_ms,
+                    status, model, input_tokens, output_tokens, total_tokens,
+                    adapter_id, confidence, attributes_json
+                 ) VALUES (
+                    'session-1', 'claude-code', 'claude', 1000, 2000,
+                    'completed', 'claude-opus-4-6', 3, 10, 27667,
+                    'claude-code', 0.9, '{}'
+                 )",
+                [],
+            )
+            .unwrap();
+
+        let summary = SessionSummary::from_sqlite(db.to_str().unwrap()).unwrap();
+        assert_eq!(
+            summary.models,
+            vec![("claude-opus-4-6".to_string(), 3, 10, 27667, 1)]
+        );
+    }
+
+    #[test]
+    fn capture_adapters_project_touched_local_claude_log() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = temp.path().join("local-log.db");
+        let session_dir = temp.path().join(".claude/projects/test");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let session_path = session_dir.join("session-1.jsonl");
+        std::fs::write(
+            &session_path,
+            concat!(
+                "{\"type\":\"assistant\",\"requestId\":\"req_1\",\"message\":{\"model\":\"claude-opus-4-6\",\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\"}],\"usage\":{\"input_tokens\":3,\"cache_creation_input_tokens\":5,\"cache_read_input_tokens\":7,\"output_tokens\":11}}}\n",
+                "{\"type\":\"result\",\"duration_ms\":1200,\"usage\":{\"input_tokens\":3,\"cache_creation_input_tokens\":5,\"cache_read_input_tokens\":7,\"output_tokens\":11},\"modelUsage\":{\"claude-opus-4-6\":{\"inputTokens\":3,\"outputTokens\":11,\"cacheCreationInputTokens\":5,\"cacheReadInputTokens\":7}}}\n",
+            ),
+        )
+        .unwrap();
+
+        let mut store = SqliteStore::open(&db).unwrap();
+        let session_path_string = session_path.to_string_lossy().to_string();
+        store
+            .connection_mut()
+            .execute(
+                "INSERT INTO audit_events (
+                    id, timestamp_ms, audit_type, pid, comm, action, target, status, details_json
+                 ) VALUES ('audit-1', 1000, 'file', 42, 'claude', 'write', ?1, 'observed', '{}')",
+                [session_path_string.as_str()],
+            )
+            .unwrap();
+
+        project_local_sessions_from_audit(&mut store).unwrap();
+        let total: i64 = store
+            .connection_mut()
+            .query_row(
+                "SELECT COALESCE(SUM(total_tokens), 0)
+                 FROM agent_sessions
+                 WHERE agent_type = 'claude-code'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(total > 0);
+        let token_rows: i64 = store
+            .connection_mut()
+            .query_row("SELECT COUNT(*) FROM token_usage", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(token_rows, 1);
+        let tool_rows: i64 = store
+            .connection_mut()
+            .query_row(
+                "SELECT COUNT(*) FROM tool_calls WHERE adapter_id = 'claude-code'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tool_rows, 1);
     }
 
     #[test]
