@@ -395,3 +395,29 @@ fn top_discovers_agent_native_local_sessions() {
     assert!(top.contains("1 tool"), "{top}");
     assert!(top.contains("fix the test"), "{top}");
 }
+
+#[test]
+fn top_reads_active_claude_local_session_model_and_tokens() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let session_dir = temp.path().join(".claude/projects/-tmp-project");
+    std::fs::create_dir_all(&session_dir).expect("session dir");
+    std::fs::write(
+        session_dir.join("claude-active.jsonl"),
+        concat!(
+            "{\"type\":\"user\",\"sessionId\":\"claude-active\",\"message\":{\"content\":\"inspect the trace\"}}\n",
+            "{\"type\":\"assistant\",\"sessionId\":\"claude-active\",\"requestId\":\"req_1\",\"message\":{\"model\":\"claude-opus-4-6\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"Bash\",\"input\":{\"command\":\"true\"}}],\"usage\":{\"input_tokens\":3,\"cache_creation_input_tokens\":5,\"cache_read_input_tokens\":7,\"output_tokens\":11}}}\n",
+            "{\"type\":\"assistant\",\"sessionId\":\"claude-active\",\"requestId\":\"req_1\",\"message\":{\"model\":\"claude-opus-4-6\",\"content\":[{\"type\":\"text\",\"text\":\"done\"}],\"usage\":{\"input_tokens\":3,\"cache_creation_input_tokens\":5,\"cache_read_input_tokens\":7,\"output_tokens\":11}}}\n",
+        ),
+    )
+    .expect("claude session");
+
+    let top = agentsight_stdout_with_env(
+        &["top", "--once", "--limit", "20"],
+        &[("HOME", temp.path().as_os_str())],
+    );
+    assert!(top.contains("claude:"), "{top}");
+    assert!(top.contains("inspect the trace"), "{top}");
+    assert!(top.contains("claude-opus-4-6"), "{top}");
+    assert!(top.contains("26"), "{top}");
+    assert!(top.contains("1 tool"), "{top}");
+}

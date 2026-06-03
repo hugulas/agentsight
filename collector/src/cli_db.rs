@@ -538,6 +538,8 @@ fn json_u64(v: &serde_json::Value, key: &str) -> u64 {
 
 fn parse_local_session(source: &str, content: &str) -> serde_json::Value {
     let mut models: BTreeMap<String, (u64, u64, u64)> = BTreeMap::new();
+    let mut claude_message_models: BTreeMap<String, (u64, u64, u64)> = BTreeMap::new();
+    let mut claude_seen_usage = BTreeSet::new();
     let mut tools: BTreeMap<String, usize> = BTreeMap::new();
     let mut duration_ms = 0u64;
     let mut num_turns = 0u64;
@@ -571,6 +573,25 @@ fn parse_local_session(source: &str, content: &str) -> serde_json::Value {
                 }
             }
             ("claude", "assistant") => {
+                if let Some(usage) = obj.pointer("/message/usage")
+                    && claude_seen_usage.insert(claude_usage_key(&obj))
+                {
+                    let model = obj
+                        .pointer("/message/model")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    let inp = json_u64(usage, "input_tokens");
+                    let out = json_u64(usage, "output_tokens");
+                    let total = inp
+                        + out
+                        + json_u64(usage, "cache_read_input_tokens")
+                        + json_u64(usage, "cache_creation_input_tokens");
+                    let entry = claude_message_models.entry(model).or_default();
+                    entry.0 += inp;
+                    entry.1 += out;
+                    entry.2 += total;
+                }
                 if let Some(items) = obj.pointer("/message/content").and_then(|v| v.as_array()) {
                     for item in items {
                         if item.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
@@ -618,10 +639,23 @@ fn parse_local_session(source: &str, content: &str) -> serde_json::Value {
         }
     }
 
+    if models.is_empty() {
+        models = claude_message_models;
+    }
+
     if models.is_empty() && tools.is_empty() && duration_ms == 0 && num_turns == 0 {
         return serde_json::Value::Null;
     }
     serde_json::json!({ "models": models, "tools": tools, "duration_ms": duration_ms, "num_turns": num_turns, "cost_usd": cost_usd })
+}
+
+fn claude_usage_key(obj: &serde_json::Value) -> String {
+    obj.get("requestId")
+        .or_else(|| obj.pointer("/message/id"))
+        .or_else(|| obj.get("uuid"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("usage")
+        .to_string()
 }
 
 #[cfg(test)]
@@ -720,6 +754,33 @@ mod tests {
             summary
                 .endpoints
                 .contains(&"api.anthropic.com/v1/messages(2)".to_string())
+        );
+    }
+
+    #[test]
+    fn local_claude_summary_reads_active_message_usage() {
+        let parsed = parse_local_session(
+            "claude",
+            concat!(
+                "{\"type\":\"assistant\",\"requestId\":\"req_1\",\"message\":{\"model\":\"claude-opus-4-6\",\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\"}],\"usage\":{\"input_tokens\":3,\"cache_creation_input_tokens\":5,\"cache_read_input_tokens\":7,\"output_tokens\":11}}}\n",
+                "{\"type\":\"assistant\",\"requestId\":\"req_1\",\"message\":{\"model\":\"claude-opus-4-6\",\"content\":[{\"type\":\"text\",\"text\":\"done\"}],\"usage\":{\"input_tokens\":3,\"cache_creation_input_tokens\":5,\"cache_read_input_tokens\":7,\"output_tokens\":11}}}\n",
+            ),
+        );
+        assert_eq!(
+            parsed.pointer("/models/claude-opus-4-6/0"),
+            Some(&serde_json::Value::from(3))
+        );
+        assert_eq!(
+            parsed.pointer("/models/claude-opus-4-6/1"),
+            Some(&serde_json::Value::from(11))
+        );
+        assert_eq!(
+            parsed.pointer("/models/claude-opus-4-6/2"),
+            Some(&serde_json::Value::from(26))
+        );
+        assert_eq!(
+            parsed.pointer("/tools/Bash"),
+            Some(&serde_json::Value::from(1))
         );
     }
 }

@@ -7,7 +7,7 @@
 
 **English** | [中文](README.zh-CN.md)
 
-AgentSight is `perf`/`top`/`strace`/`nsight`-like tool for AI agents. See what coding agents actually do
+Your local first `perf`/`top`/`strace`/`nsight`-like tool for AI agents. See what agents actually do
 to your machine, and connect those actions back to the prompts, model calls, and
 tool decisions that triggered them.
 
@@ -17,8 +17,7 @@ OpenCode, OpenClaw, or any command. AgentSight records a local trace of:
 - processes and child processes, shell commands, cwd, argv, exit status, and duration
 - files created, written, truncated, renamed, or deleted
 - network destinations contacted
-- prompts, responses, tool intent, and LLM/model/token usage when observable
-  from network traffic or agent-native local session logs
+- prompts, responses, tool intent, and LLM/model/token
 
 No SDK, no proxy, no vendor integration. AgentSight observes with eBPF and TLS traffic tracing, so it works even when the agent is a
 closed-source CLI. **✨ Zero Instrumentation Required**
@@ -26,65 +25,18 @@ closed-source CLI. **✨ Zero Instrumentation Required**
 ## Quick Start
 
 ```bash
-# Install from crates.io, or download the prebuilt Linux binary from GitHub.
 cargo install agentsight
-# wget https://github.com/eunomia-bpf/agentsight/releases/latest/download/agentsight && chmod +x agentsight
-# Launch your agent with monitoring. AgentSight may prompt for sudo
-# to load eBPF probes; the agent itself still runs as your user.
-# Launch your agent, record the run, and print perf-style counters.
-agentsight stat -- claude
-# Re-open the latest session report after the agent exits.
-agentsight report
-# Watch live ranked agent sessions.
-agentsight top
-# Or attach to an already-running agent by process name
-sudo agentsight record -c claude
+# or: wget https://github.com/eunomia-bpf/agentsight/releases/latest/download/agentsight && chmod +x agentsight
+sudo agentsight top
 ```
 
-When the launched agent exits, `stat` prints counters; `report` opens the saved run summary later. For the blog example:
-
-```bash
-./agentsight record --db run.db -- claude "fix the failing API test"
-./agentsight stat --db run.db
-./agentsight top --db run.db --once
-./agentsight report --db run.db
-./agentsight prompts --db run.db --json
-```
-
-```text
-agentsight session · 13s · 1 API calls · 1380 tokens
-
-  claude-sonnet-4-20250514 — 1 calls, 1380 tokens (in: 1200, out: 180)
-
-4 processes spawned: node(2), npm(2)
-4 process exits: failure(2), success(2)
-3 files accessed: /workspace/app/src/api/handler.ts, /workspace/app/tests/api.test.ts, /workspace/app/package-lock.json
-Network: api.anthropic.com, registry.npmjs.org
-```
-
-The summary is intentionally grounded in observable effects: model/token usage, failed and successful commands, touched files, and network targets, so the agent's final claim can be checked against what changed on the machine.
-Prompts and responses are available separately with `agentsight prompts --json` when AgentSight stored them in SQLite from parsed LLM traffic or adapters.
-
-Open [http://127.0.0.1:7395](http://127.0.0.1:7395) to watch live.
-
 <div align="center">
-  <img src="https://github.com/eunomia-bpf/agentsight/raw/master/docs/demo-tree.png" alt="AgentSight Demo - Process Tree Visualization" width="800">
-  <p><em>Real-time process tree visualization showing AI agent interactions and file operations</em></p>
+  <img src="docs/top-mode-demo.png" alt="AgentSight top live session view" width="1000">
+  <p><em>Live sessions ranked by model, session tokens, health, process family, tool calls, file activity, and network activity</em></p>
 </div>
 
-<div align="center">
-  <img src="https://github.com/eunomia-bpf/agentsight/raw/master/docs/demo-timeline.png" alt="AgentSight Demo - Timeline Visualization" width="800">
-  <p><em>Real-time timeline visualization showing AI agent interactions and system calls</em></p>
-</div>
-
-<div align="center">
-  <img src="https://github.com/eunomia-bpf/agentsight/raw/master/docs/demo-metrics.png" alt="AgentSight Demo - Metrics Visualization" width="800">
-  <p><em>Real-time metrics visualization showing AI agent memory and CPU usage</em></p>
-</div>
-
-<div align="center">
-  <p>👉 <strong>Try the <a href="https://agentsight.us">live demo</a></strong> — explore a real recorded Claude Code session right in your browser.</p>
-</div>
+If you downloaded the binary into the current directory, run `./agentsight top`.
+`top` auto-loads eBPF probes, discovers local agents, and connnect system activity to Agent behavior in real time. See the [Usage](#usage) section for more examples and details.
 
 ## 🚀 Why AgentSight?
 
@@ -121,9 +73,11 @@ For source builds, see [docs/build.md](docs/build.md).
 
 ### Installation
 
-#### Release Binary
+#### Cargo or Release Binary
 
-For local use, download the latest release binary and run `agentsight stat -- ...` or `agentsight record -- ...` as shown in Quick Start.
+For local use, install with `cargo install agentsight` or download the latest
+release binary, then start with `agentsight top`. Use the examples below when
+you want to record a specific command or inspect saved sessions.
 
 #### Docker
 
@@ -150,7 +104,33 @@ agentsight db audit --json            # process spawns, file opens, API calls
 agentsight db export -o snapshot.json # export for web dashboard
 ```
 
-During a session, visit [http://127.0.0.1:7395](http://127.0.0.1:7395) for live traffic, process trees, and metrics.
+### Web Interface
+
+During a session, visit [http://127.0.0.1:7395](http://127.0.0.1:7395) for live traffic, process trees, and metrics:
+- **Timeline View**: http://127.0.0.1:7395/timeline
+- **Process Tree**: http://127.0.0.1:7395/tree
+- **Raw Logs**: http://127.0.0.1:7395/logs
+
+<div align="center">
+  <img src="https://github.com/eunomia-bpf/agentsight/raw/master/docs/demo-tree.png" alt="AgentSight Demo - Process Tree Visualization" width="800">
+  <p><em>Process tree visualization for agent subprocesses and file activity</em></p>
+</div>
+
+<div align="center">
+  <img src="https://github.com/eunomia-bpf/agentsight/raw/master/docs/demo-timeline.png" alt="AgentSight Demo - Timeline Visualization" width="800">
+  <p><em>Timeline visualization for LLM, process, file, and network events</em></p>
+</div>
+
+<div align="center">
+  <img src="https://github.com/eunomia-bpf/agentsight/raw/master/docs/demo-metrics.png" alt="AgentSight Demo - Metrics Visualization" width="800">
+  <p><em>Metrics visualization for memory and CPU usage</em></p>
+</div>
+
+<div align="center">
+  <p><strong>Try the <a href="https://agentsight.us">live demo</a></strong> to explore a real recorded Claude Code session in the browser.</p>
+</div>
+
+### Agent Discovery and Adapters
 
 > **Privileges:** eBPF probes need root. AgentSight auto-elevates them via `sudo` (you may be prompted once). Your agent always runs as your normal user. If you prefer explicit sudo: `sudo -E ./agentsight record -- claude` — the child is still dropped to your user.
 
@@ -373,14 +353,6 @@ sudo ./bpf/stdiocap -p 12345
 # Run process tracer
 sudo ./bpf/process -c python
 ```
-
-#### Web Interface Access
-
-`stat -- <command>` and `record` start the web UI by default. Low-level `debug trace` starts it when you pass `--server`:
-- **Timeline View**: http://127.0.0.1:7395/timeline
-- **Process Tree**: http://127.0.0.1:7395/tree
-- **Raw Logs**: http://127.0.0.1:7395/logs
-
 
 ## ❓ Frequently Asked Questions
 

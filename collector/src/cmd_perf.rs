@@ -601,7 +601,7 @@ fn render_top_summary(
             Span::styled("filter ", label_style()),
             Span::raw(filter),
             Span::raw("  "),
-            Span::styled("tokens ", label_style()),
+            Span::styled("session tokens ", label_style()),
             Span::raw(format_token_value(Some(top.total_tokens))),
         ]),
         Line::from(vec![
@@ -644,8 +644,8 @@ fn render_session_table(
             Cell::from(row.age_label()),
             Cell::from(truncate_text(&row.model_label(), 14)),
             Cell::from(row.token_label()),
-            Cell::from(truncate_text(&row.health_label(), 10)),
-            Cell::from(truncate_text(&row.activity_label(), 40)),
+            Cell::from(row.health_label()),
+            Cell::from(truncate_text(&tui_activity_label(row), 48)),
         ])
         .style(row_style(row))
     });
@@ -656,8 +656,8 @@ fn render_session_table(
         Constraint::Length(7),
         Constraint::Length(6),
         Constraint::Length(14),
-        Constraint::Length(8),
-        Constraint::Length(10),
+        Constraint::Length(9),
+        Constraint::Length(12),
         Constraint::Min(12),
     ];
     let table = Table::new(rows, widths)
@@ -807,6 +807,7 @@ fn session_detail_lines(row: &AgentTopRow, options: &TopOptions) -> Vec<Line<'st
             detail_line("model", row.model_label()),
             detail_line("age", row.age_label()),
             detail_line("evidence", row.evidence_label()),
+            detail_line("session tokens", row.token_label()),
             detail_line(
                 "resources",
                 format!(
@@ -816,7 +817,10 @@ fn session_detail_lines(row: &AgentTopRow, options: &TopOptions) -> Vec<Line<'st
             ),
             detail_line(
                 "activity",
-                format!("tokens={} {}", row.token_label(), row.activity_label()),
+                format!(
+                    "processes={} tools={} execs={} failures={} files={} network={}",
+                    row.processes, row.tools, row.execs, row.failures, row.files, row.network
+                ),
             ),
             detail_line("unattributed ebpf pids", row.unattributed.to_string()),
             detail_line("trace", row.trace.clone()),
@@ -855,6 +859,33 @@ fn label_style() -> Style {
     Style::default()
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD)
+}
+
+fn tui_activity_label(row: &AgentTopRow) -> String {
+    let mut parts = Vec::new();
+    if row.processes > 0 {
+        parts.push(format!("{} proc", format_compact_i64(row.processes as i64)));
+    }
+    if row.tools > 0 {
+        parts.push(format!("{} tool", format_compact_i64(row.tools as i64)));
+    }
+    if row.execs > 0 {
+        parts.push(format!("{} exec", format_compact_i64(row.execs as i64)));
+    }
+    if row.failures > 0 {
+        parts.push(format!("{} fail", format_compact_i64(row.failures as i64)));
+    }
+    if row.files > 0 {
+        parts.push(format!("{} file", format_compact_i64(row.files as i64)));
+    }
+    if row.network > 0 {
+        parts.push(format!("{} net", format_compact_i64(row.network as i64)));
+    }
+    if parts.is_empty() {
+        "-".to_string()
+    } else {
+        parts.join(", ")
+    }
 }
 
 fn row_style(row: &AgentTopRow) -> Style {
@@ -2071,6 +2102,8 @@ fn parse_local_top_session(agent: &str, path: &Path, content: &str) -> Option<Lo
         .to_string();
     let mut model = None;
     let mut total_tokens = 0i64;
+    let mut claude_message_tokens = 0i64;
+    let mut claude_seen_usage = HashSet::new();
     let mut tools = 0usize;
     let mut prompt_preview = None;
 
@@ -2099,6 +2132,20 @@ fn parse_local_top_session(agent: &str, path: &Path, content: &str) -> Option<Lo
                 }
             }
             ("claude", "assistant") => {
+                if let Some(name) = obj
+                    .pointer("/message/model")
+                    .and_then(|value| value.as_str())
+                {
+                    model.get_or_insert_with(|| name.to_string());
+                }
+                if let Some(usage) = obj.pointer("/message/usage")
+                    && claude_seen_usage.insert(claude_usage_key(&obj))
+                {
+                    claude_message_tokens += json_i64(usage, "input_tokens")
+                        + json_i64(usage, "output_tokens")
+                        + json_i64(usage, "cache_read_input_tokens")
+                        + json_i64(usage, "cache_creation_input_tokens");
+                }
                 if let Some(items) = obj
                     .pointer("/message/content")
                     .and_then(|value| value.as_array())
@@ -2160,6 +2207,10 @@ fn parse_local_top_session(agent: &str, path: &Path, content: &str) -> Option<Lo
         }
     }
 
+    if total_tokens == 0 {
+        total_tokens = claude_message_tokens;
+    }
+
     if total_tokens == 0 && tools == 0 && prompt_preview.is_none() && model.is_none() {
         return None;
     }
@@ -2216,6 +2267,15 @@ fn local_session_id(obj: &Value) -> Option<String> {
         }
     }
     None
+}
+
+fn claude_usage_key(obj: &Value) -> String {
+    obj.get("requestId")
+        .or_else(|| obj.pointer("/message/id"))
+        .or_else(|| obj.get("uuid"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("usage")
+        .to_string()
 }
 
 fn local_message_preview(value: &Value) -> Option<String> {
