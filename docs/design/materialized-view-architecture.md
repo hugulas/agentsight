@@ -59,7 +59,6 @@ The view currently materializes:
 - `agent_sessions`
 - `network_targets`
 - `resource_samples`
-- `view_stats`
 
 This means a normal `record -o record.log` no longer writes every raw event. It
 writes structured view updates such as:
@@ -167,6 +166,7 @@ collector/src/sources/
 
 collector/src/view/
   mod.rs           MaterializedView: in-memory aggregate/query state
+  projector.rs     Event-to-ViewUpdate projection and pending request matching
   types.rs         owned query-facing rows, snapshots, and ViewUpdate contracts
 
 collector/src/sinks/
@@ -180,7 +180,7 @@ collector/src/output/
 
 collector/src/framework/storage/
   analyzer.rs      StorageAnalyzer: event-stream analyzer that drives the view
-  sqlite.rs        SQLite row store + Event-to-ViewUpdate projection
+  sqlite.rs        SQLite row store
 
 collector/src/cmd_trace.rs
   builds runners/analyzers and attaches view sinks

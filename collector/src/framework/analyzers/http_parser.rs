@@ -716,7 +716,7 @@ impl Analyzer for HTTPParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::framework::storage::sqlite::ViewProjector;
+    use crate::view::ViewProjector;
     use crate::view::types::ViewUpdate;
     use futures::StreamExt;
     use hpack::Encoder as HpackEncoder;
@@ -814,7 +814,7 @@ mod tests {
 
         let mut view = ViewProjector::new();
         for event in output {
-            view.ingest_event(&event).unwrap();
+            view.ingest_event(&event);
         }
         let total: i64 = view
             .drain_updates()

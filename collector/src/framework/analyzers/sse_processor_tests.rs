@@ -8,7 +8,7 @@ mod sse_processor_tests {
     use super::super::sse_processor::SSEProcessor;
     use crate::framework::core::Event;
     use crate::framework::runners::EventStream;
-    use crate::framework::storage::sqlite::ViewProjector;
+    use crate::view::ViewProjector;
     use crate::view::types::ViewUpdate;
     use futures::stream;
     use futures::stream::StreamExt;
@@ -80,8 +80,8 @@ mod sse_processor_tests {
                 "body": "{\"model\":\"gemini-2.5-pro\"}"
             }),
         );
-        view.ingest_event(&req).unwrap();
-        view.ingest_event(&collected[0]).unwrap();
+        view.ingest_event(&req);
+        view.ingest_event(&collected[0]);
 
         let total: i64 = view
             .drain_updates()

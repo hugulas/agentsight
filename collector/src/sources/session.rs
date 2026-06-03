@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::text::{short_session_id, truncate_text};
-use crate::view::types::Snapshot;
+use crate::view::MaterializedView;
+use crate::view::types::{SessionRow, Snapshot, SnapshotOptions, TokenUsageRow, ViewUpdate};
 
 #[derive(Debug, Clone)]
 pub(crate) struct LocalSession {
@@ -38,10 +39,6 @@ impl LocalSession {
 
     pub(crate) fn tools_total(&self) -> usize {
         self.tools.values().sum()
-    }
-
-    pub(crate) fn has_tokens(&self) -> bool {
-        self.input_tokens > 0 || self.output_tokens > 0 || self.total_tokens > 0
     }
 
     pub(crate) fn to_json(&self) -> Value {
@@ -121,46 +118,106 @@ pub(crate) fn from_snapshot(snapshot: &Snapshot) -> Vec<LocalSession> {
     )
 }
 
-pub(crate) fn model_rows(sessions: &[LocalSession]) -> Vec<(String, i64, i64, i64, i64)> {
-    let mut models = BTreeMap::<String, (i64, i64, i64, i64)>::new();
-    for session in sessions {
-        for (model, (input, output, total)) in &session.models {
-            let entry = models.entry(model.clone()).or_default();
-            entry.0 += input;
-            entry.1 += output;
-            entry.2 += total;
-            entry.3 += 1;
-        }
-    }
-    models
-        .into_iter()
-        .map(|(model, (input, output, total, calls))| (model, input, output, total, calls))
+pub(crate) fn token_totals_from_snapshot(snapshot: &Snapshot) -> Option<(i64, i64, i64)> {
+    let local_snapshot = materialized_snapshot(&from_snapshot(snapshot));
+    let totals = local_snapshot.materialized_token_totals();
+    (totals.0 > 0 || totals.1 > 0 || totals.2 > 0).then_some(totals)
+}
+
+pub(crate) fn view_id(session: &LocalSession) -> String {
+    format!("local:{}:{}", session.agent, session.display_id)
+}
+
+pub(crate) fn view_updates(sessions: &[LocalSession]) -> Vec<ViewUpdate> {
+    sessions
+        .iter()
+        .flat_map(|session| {
+            let mut updates = vec![ViewUpdate::Session(session_row(session))];
+            updates.extend(token_rows(session).into_iter().map(ViewUpdate::TokenUsage));
+            updates
+        })
         .collect()
 }
 
-pub(crate) fn model_token_counts(sessions: &[LocalSession]) -> BTreeMap<String, i64> {
-    let mut counts = BTreeMap::new();
-    for session in sessions {
-        for (model, (_, _, total)) in &session.models {
-            *counts.entry(model.clone()).or_default() += *total;
-        }
+pub(crate) fn materialized_view(sessions: &[LocalSession]) -> MaterializedView {
+    let mut view = MaterializedView::new();
+    view.set_source("local_session");
+    for update in view_updates(sessions) {
+        view.load_update(update);
     }
-    counts
+    view
 }
 
-pub(crate) fn dominant_model(sessions: &[LocalSession]) -> Option<String> {
-    model_token_counts(sessions)
-        .into_iter()
-        .max_by_key(|(_, total)| *total)
-        .map(|(model, _)| model)
+pub(crate) fn materialized_snapshot(sessions: &[LocalSession]) -> Snapshot {
+    materialized_view(sessions).export_snapshot(SnapshotOptions { audit_limit: 0 })
 }
 
-pub(crate) fn total_tokens(sessions: &[LocalSession]) -> i64 {
-    sessions
+fn session_row(session: &LocalSession) -> SessionRow {
+    SessionRow {
+        id: view_id(session),
+        agent_type: session.agent.clone(),
+        agent_name: Some(session.agent.clone()),
+        pid: None,
+        comm: Some(session.agent.clone()),
+        start_timestamp_ms: updated_ms(session).saturating_sub(session.duration_ms),
+        end_timestamp_ms: Some(updated_ms(session)),
+        status: "observed".to_string(),
+        model: session.model.clone(),
+        input_tokens: session.input_tokens,
+        output_tokens: session.output_tokens,
+        total_tokens: session.total_tokens,
+        view_source: "local_session".to_string(),
+        confidence: Some(0.95),
+        attributes: serde_json::json!({
+            "path": session.path.to_string_lossy(),
+            "display_id": session.display_id,
+            "prompt_preview": session.prompt_preview.clone(),
+            "duration_ms": session.duration_ms,
+            "num_turns": session.num_turns,
+            "tools": session.tools.clone(),
+        }),
+    }
+}
+
+fn token_rows(session: &LocalSession) -> Vec<TokenUsageRow> {
+    let session_id = view_id(session);
+    session
+        .models
         .iter()
-        .filter(|session| session.has_tokens())
-        .map(|session| session.total_tokens)
-        .sum()
+        .filter(|(_, (_, _, total))| *total > 0)
+        .map(|(model, (input, output, total))| TokenUsageRow {
+            id: format!("token-{session_id}-{}", sanitize_id(model)),
+            llm_call_id: format!("{session_id}-{model}"),
+            timestamp_ms: updated_ms(session),
+            pid: None,
+            comm: Some(session.agent.clone()),
+            provider: None,
+            model: Some(model.clone()),
+            input_tokens: *input,
+            output_tokens: *output,
+            cache_creation_tokens: 0,
+            cache_read_tokens: 0,
+            total_tokens: *total,
+            source: "local_session".to_string(),
+            view_source: "local_session".to_string(),
+            confidence: Some(0.95),
+        })
+        .collect()
+}
+
+fn updated_ms(session: &LocalSession) -> u64 {
+    session
+        .updated
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn sanitize_id(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
 }
 
 pub(crate) fn tool_counts(sessions: &[LocalSession]) -> BTreeMap<String, usize> {
@@ -248,6 +305,24 @@ pub(crate) fn local_session_source(path: &Path) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+#[cfg(test)]
+pub(crate) fn create_temp_session_path(agent: &str) -> (tempfile::TempDir, PathBuf) {
+    let temp = tempfile::tempdir().unwrap();
+    let base = match agent {
+        "claude" => [".claude", "projects"],
+        "codex" => [".codex", "sessions"],
+        _ => unreachable!("test agent"),
+    };
+    let path = temp
+        .path()
+        .join(base[0])
+        .join(base[1])
+        .join("session.jsonl");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, "{}\n").unwrap();
+    (temp, path)
 }
 
 fn read_session_path_with_source(

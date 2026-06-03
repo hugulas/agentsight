@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
+mod projector;
 pub mod types;
 
+pub(crate) use projector::ViewProjector;
+
 use crate::framework::core::Event;
-use crate::framework::storage::sqlite::ViewProjector;
 use crate::view::types::{
     AgentRow, AuditEventRow, LlmCallRow, NetworkTargetRow, ResourceSampleRow, SessionRow, Snapshot,
     SnapshotOptions, SnapshotSummary, StorageResult, TokenSummary, TokenUsageRow, ToolCallRow,
@@ -39,19 +41,17 @@ impl MaterializedView {
         self.state.apply_update(&update);
     }
 
-    pub(crate) fn ingest_event(&mut self, event: &Event) -> StorageResult<()> {
-        self.projector.ingest_event(event)?;
+    pub(crate) fn ingest_event(&mut self, event: &Event) {
+        self.projector.ingest_event(event);
         let updates = self.projector.drain_updates();
         for update in updates {
             self.state.apply_update(&update);
         }
-        Ok(())
     }
 
-    pub(crate) fn ingest_update(&mut self, update: &ViewUpdate) -> StorageResult<()> {
+    pub(crate) fn ingest_update(&mut self, update: &ViewUpdate) {
         self.projector.notify_update(update);
         self.state.apply_update(update);
-        Ok(())
     }
 
     pub(crate) fn ingest_jsonl_file(&mut self, path: impl AsRef<Path>) -> StorageResult<usize> {
@@ -63,11 +63,11 @@ impl MaterializedView {
                 continue;
             }
             if let Ok(update) = serde_json::from_str::<ViewUpdate>(trimmed) {
-                self.ingest_update(&update)?;
+                self.ingest_update(&update);
             } else {
                 let event: Event = serde_json::from_str(trimmed)
                     .map_err(|e| format!("failed to parse JSONL line {}: {}", idx + 1, e))?;
-                self.ingest_event(&event)?;
+                self.ingest_event(&event);
             }
             inserted += 1;
         }

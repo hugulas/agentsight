@@ -1,0 +1,909 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 eunomia-bpf org.
+
+use crate::framework::core::Event;
+use crate::framework::semantic::{
+    CanonicalEvent, EventKind, body_json, extract_model, extract_token_usage,
+    extract_token_usage_from_sse, normalize_event, provider_from_host,
+};
+use crate::view::types::{
+    AuditEventRow, LlmCallRow, NetworkTargetRow, ResourceSampleRow, SessionRow, TokenUsageRow,
+    ToolCallRow, ViewUpdate, ViewUpdateSink,
+};
+use serde_json::Value;
+use std::collections::{HashMap, VecDeque};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+#[derive(Debug, Clone)]
+struct PendingRequest {
+    event_id: String,
+    timestamp_ms: u64,
+    pid: u32,
+    comm: String,
+    provider: Option<String>,
+    model: Option<String>,
+    host: Option<String>,
+    path: Option<String>,
+    request_id: Option<String>,
+    body_json: Option<Value>,
+}
+
+#[derive(Default)]
+pub(crate) struct ViewProjector {
+    pending: HashMap<(u32, u64), VecDeque<PendingRequest>>,
+    sinks: Vec<Box<dyn ViewUpdateSink>>,
+    emitted: Vec<ViewUpdate>,
+    next_seq: u64,
+}
+
+impl ViewProjector {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn add_sink(&mut self, sink: Box<dyn ViewUpdateSink>) {
+        self.sinks.push(sink);
+    }
+
+    pub(crate) fn drain_updates(&mut self) -> Vec<ViewUpdate> {
+        std::mem::take(&mut self.emitted)
+    }
+
+    pub(crate) fn notify_update(&mut self, update: &ViewUpdate) {
+        for sink in &mut self.sinks {
+            sink.update(update);
+        }
+    }
+
+    pub(crate) fn ingest_event(&mut self, event: &Event) -> CanonicalEvent {
+        self.next_seq += 1;
+        let raw_id = format!(
+            "event-{}-{}-{}-{}",
+            event.timestamp,
+            sanitize_id(&event.source),
+            event.pid,
+            self.next_seq
+        );
+        let canonical = normalize_event(event, raw_id, now_ms());
+        if let Some(sample) = resource_sample_from_event(&canonical) {
+            self.emit(ViewUpdate::ResourceSample(sample));
+        }
+        if let Some(target) = network_target_from_event(&canonical) {
+            self.emit(ViewUpdate::NetworkTarget(target));
+        }
+        self.ingest(&canonical);
+        canonical
+    }
+
+    fn emit(&mut self, update: ViewUpdate) {
+        for sink in &mut self.sinks {
+            sink.update(&update);
+        }
+        self.emitted.push(update);
+    }
+
+    fn emit_token_usage(&mut self, row: TokenUsageRow) -> TokenUsageRow {
+        self.emit(ViewUpdate::TokenUsage(row.clone()));
+        row
+    }
+
+    fn emit_audit_event(&mut self, row: AuditEventRow) {
+        self.emit(ViewUpdate::AuditEvent(row));
+    }
+
+    fn emit_tool_call(&mut self, row: ToolCallRow) {
+        self.emit(ViewUpdate::ToolCall(row));
+    }
+
+    fn emit_session(&mut self, row: SessionRow) {
+        self.emit(ViewUpdate::Session(row));
+    }
+
+    fn ingest(&mut self, event: &CanonicalEvent) {
+        self.ingest_agent_specific_event(event);
+        match event.kind {
+            EventKind::LlmRequest => self.ingest_llm_request(event),
+            EventKind::HttpResponse | EventKind::LlmResponse | EventKind::LlmError => {
+                self.ingest_llm_response(event)
+            }
+            EventKind::ProcessExec => self.ingest_process_audit(event, "exec"),
+            EventKind::ProcessExit => self.ingest_process_audit(event, "exit"),
+            EventKind::FsOpen if is_writable_open(event) => self.ingest_file_audit(event),
+            EventKind::FsWrite | EventKind::FsMutation => self.ingest_file_audit(event),
+            _ => {}
+        }
+    }
+
+    fn ingest_llm_request(&mut self, event: &CanonicalEvent) {
+        let (Some(pid), Some(tid)) = (event.pid, event.tid) else {
+            return;
+        };
+        let req = PendingRequest {
+            event_id: event.event_id.clone(),
+            timestamp_ms: event.timestamp_ms,
+            pid,
+            comm: event.comm.clone().unwrap_or_default(),
+            provider: event.provider.clone(),
+            model: event.model.clone(),
+            host: event.host.clone(),
+            path: event.path.clone(),
+            request_id: event.request_id.clone(),
+            body_json: body_json(&event.attributes),
+        };
+        self.insert_orphan_llm_request(&req);
+        self.pending.entry((pid, tid)).or_default().push_back(req);
+    }
+
+    fn ingest_llm_response(&mut self, event: &CanonicalEvent) {
+        let Some(pid) = event.pid else {
+            return;
+        };
+        if let Some(tid) = event.tid
+            && let Some((req, confidence)) = self.take_matching_request(pid, tid, event)
+        {
+            self.upsert_llm_pair(req, event, confidence);
+            return;
+        }
+        self.insert_orphan_llm_response(event);
+    }
+
+    fn take_matching_request(
+        &mut self,
+        pid: u32,
+        tid: u64,
+        resp: &CanonicalEvent,
+    ) -> Option<(PendingRequest, f32)> {
+        let requests = self.pending.get_mut(&(pid, tid))?;
+        let (req, confidence) = if let Some(resp_request_id) = resp.request_id.as_deref() {
+            let pos = requests
+                .iter()
+                .position(|req| req.request_id.as_deref() == Some(resp_request_id))?;
+            (requests.remove(pos)?, 0.95)
+        } else if requests.len() == 1 {
+            (requests.pop_front()?, 0.75)
+        } else {
+            return None;
+        };
+        if requests.is_empty() {
+            self.pending.remove(&(pid, tid));
+        }
+        Some((req, confidence))
+    }
+
+    fn upsert_llm_pair(&mut self, req: PendingRequest, resp: &CanonicalEvent, confidence: f32) {
+        let response_body = response_body_json(resp);
+        let model = req
+            .model
+            .clone()
+            .or_else(|| response_body.as_ref().and_then(extract_model))
+            .or_else(|| resp.model.clone())
+            .unwrap_or_else(|| "unknown".to_string());
+        let provider = req
+            .provider
+            .clone()
+            .or_else(|| req.host.as_deref().map(provider_from_host));
+        let llm_call_id = format!("llm-{}", req.event_id);
+        let request_body_json = req.body_json.as_ref().map(Value::to_string);
+        let response_body_json = response_body.as_ref().map(Value::to_string);
+        let status_code = resp.status_code;
+        let mut call_row = llm_call_row(
+            &llm_call_id,
+            req.timestamp_ms,
+            Some(resp.timestamp_ms),
+            req.pid,
+            &req.comm,
+            provider.as_deref(),
+            Some(&model),
+            req.host.as_deref(),
+            req.path.as_deref(),
+            status_code,
+            request_body_json.as_deref(),
+            response_body_json.as_deref(),
+        );
+        if let Some(usage) = self.ingest_response_usage_and_tools(
+            resp,
+            &llm_call_id,
+            req.pid,
+            &req.comm,
+            provider.as_deref(),
+            &model,
+            req.host.as_deref(),
+            request_body_json.as_deref(),
+            response_body_json.as_deref(),
+            confidence,
+        ) {
+            call_row.input_tokens = usage.input_tokens;
+            call_row.output_tokens = usage.output_tokens;
+            call_row.total_tokens = usage.total_tokens;
+        }
+        self.emit_audit_event(AuditEventRow {
+            id: format!("audit-{llm_call_id}"),
+            timestamp_ms: resp.timestamp_ms,
+            audit_type: "llm".to_string(),
+            pid: Some(req.pid),
+            comm: Some(req.comm.clone()),
+            subject: Some(model.clone()),
+            action: Some("call".to_string()),
+            target: req.host.clone(),
+            status: Some(
+                if status_code.map(|c| c >= 400).unwrap_or(false) {
+                    "failure"
+                } else {
+                    "success"
+                }
+                .to_string(),
+            ),
+            summary: Some("LLM call".to_string()),
+            details: parse_json_value(response_body_json.as_deref().unwrap_or("{}")),
+        });
+        self.emit(ViewUpdate::LlmCall(call_row));
+    }
+
+    fn insert_orphan_llm_request(&mut self, req: &PendingRequest) {
+        let llm_call_id = format!("llm-{}", req.event_id);
+        let provider = req
+            .provider
+            .clone()
+            .or_else(|| req.host.as_deref().map(provider_from_host));
+        let request_body_json = req.body_json.as_ref().map(Value::to_string);
+        let call_row = llm_call_row(
+            &llm_call_id,
+            req.timestamp_ms,
+            None,
+            req.pid,
+            &req.comm,
+            provider.as_deref(),
+            req.model.as_deref(),
+            req.host.as_deref(),
+            req.path.as_deref(),
+            None,
+            request_body_json.as_deref(),
+            None,
+        );
+        self.emit_audit_event(AuditEventRow {
+            id: format!("audit-{llm_call_id}"),
+            timestamp_ms: req.timestamp_ms,
+            audit_type: "llm".to_string(),
+            pid: Some(req.pid),
+            comm: Some(req.comm.clone()),
+            subject: req.model.clone(),
+            action: Some("request".to_string()),
+            target: req.host.clone(),
+            status: Some("orphan_request".to_string()),
+            summary: Some("LLM request".to_string()),
+            details: parse_json_value(request_body_json.as_deref().unwrap_or("{}")),
+        });
+        self.emit(ViewUpdate::LlmCall(call_row));
+    }
+
+    fn insert_orphan_llm_response(&mut self, resp: &CanonicalEvent) {
+        let response_body = response_body_json(resp);
+        let response_body_text = response_body.as_ref().map(Value::to_string);
+        let model = resp
+            .model
+            .clone()
+            .or_else(|| response_body.as_ref().and_then(extract_model))
+            .unwrap_or_else(|| "unknown".to_string());
+        let provider = resp
+            .provider
+            .clone()
+            .or_else(|| resp.host.as_deref().map(provider_from_host));
+        let pid = resp.pid.unwrap_or(0);
+        let comm = resp.comm.clone().unwrap_or_default();
+        let llm_call_id = format!("llm-orphan-{}", resp.event_id);
+        let mut call_row = llm_call_row(
+            &llm_call_id,
+            resp.timestamp_ms,
+            Some(resp.timestamp_ms),
+            pid,
+            &comm,
+            provider.as_deref(),
+            Some(&model),
+            resp.host.as_deref(),
+            resp.path.as_deref(),
+            resp.status_code,
+            None,
+            response_body_text.as_deref(),
+        );
+        if let Some(usage) = self.ingest_response_usage_and_tools(
+            resp,
+            &llm_call_id,
+            pid,
+            &comm,
+            provider.as_deref(),
+            &model,
+            resp.host.as_deref(),
+            None,
+            response_body_text.as_deref(),
+            0.35,
+        ) {
+            call_row.input_tokens = usage.input_tokens;
+            call_row.output_tokens = usage.output_tokens;
+            call_row.total_tokens = usage.total_tokens;
+        }
+        self.emit_audit_event(AuditEventRow {
+            id: format!("audit-{llm_call_id}"),
+            timestamp_ms: resp.timestamp_ms,
+            audit_type: "llm".to_string(),
+            pid: Some(pid),
+            comm: Some(comm.clone()),
+            subject: Some(model.clone()),
+            action: Some("response".to_string()),
+            target: resp.host.clone(),
+            status: Some("orphan_response".to_string()),
+            summary: Some("LLM response".to_string()),
+            details: parse_json_value(response_body_text.as_deref().unwrap_or("{}")),
+        });
+        self.emit(ViewUpdate::LlmCall(call_row));
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn ingest_response_usage_and_tools(
+        &mut self,
+        resp: &CanonicalEvent,
+        llm_call_id: &str,
+        pid: u32,
+        comm: &str,
+        provider: Option<&str>,
+        model: &str,
+        host: Option<&str>,
+        request_body_json: Option<&str>,
+        response_body_json: Option<&str>,
+        confidence: f32,
+    ) -> Option<TokenUsageRow> {
+        let response_body =
+            response_body_json.and_then(|text| serde_json::from_str::<Value>(text).ok());
+        let usage = if resp.source == "sse_processor" {
+            extract_token_usage_from_sse(&resp.attributes)
+        } else {
+            response_body
+                .as_ref()
+                .map(extract_token_usage)
+                .unwrap_or_default()
+        };
+        let mut usage_row = None;
+        if !usage.is_empty() {
+            let token_id = format!("token-{llm_call_id}");
+            usage_row = Some(self.emit_token_usage(TokenUsageRow {
+                id: token_id,
+                llm_call_id: llm_call_id.to_string(),
+                timestamp_ms: resp.timestamp_ms,
+                pid: Some(pid),
+                comm: Some(comm.to_string()),
+                provider: provider.map(str::to_string),
+                model: Some(model.to_string()),
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                cache_creation_tokens: usage.cache_creation_tokens,
+                cache_read_tokens: usage.cache_read_tokens,
+                total_tokens: usage.total_tokens(),
+                source: "response_usage".to_string(),
+                view_source: "view".to_string(),
+                confidence: Some(confidence),
+            }));
+            self.upsert_known_agent_session(
+                pid,
+                comm,
+                resp.timestamp_ms,
+                Some(resp.timestamp_ms),
+                provider,
+                host,
+                Some(model),
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.total_tokens(),
+                request_body_json,
+                response_body_json,
+                confidence,
+            );
+        }
+        self.ingest_sse_tools(resp, llm_call_id, pid, confidence);
+        usage_row
+    }
+
+    fn ingest_agent_specific_event(&mut self, event: &CanonicalEvent) {
+        self.ingest_claude_telemetry(event);
+        self.ingest_gemini_stdio_stats(event);
+    }
+
+    fn ingest_claude_telemetry(&mut self, event: &CanonicalEvent) {
+        let host = event.host.as_deref().unwrap_or_default();
+        if !host.contains("datadoghq.com") && event.source != "ssl" {
+            return;
+        }
+        let body = body_json(&event.attributes).or_else(|| {
+            event
+                .attributes
+                .get("data")
+                .and_then(|v| v.as_str())
+                .and_then(parse_json_str)
+        });
+        let Some(Value::Array(items)) = body else {
+            return;
+        };
+        let pid = event.pid.unwrap_or(0);
+        let comm = event.comm.as_deref().unwrap_or_default();
+        for (idx, item) in items.iter().enumerate() {
+            let message = item
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if message == "tengu_api_success" {
+                let input = json_i64(item, "input_tokens");
+                let output = json_i64(item, "output_tokens");
+                let cache = json_i64(item, "cached_input_tokens");
+                let total = input + output + cache;
+                if total <= 0 {
+                    continue;
+                }
+                let model = item
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown");
+                let llm_call_id = format!("claude-telemetry-{}-{idx}", event.event_id);
+                self.emit_token_usage(TokenUsageRow {
+                    id: format!("token-{llm_call_id}"),
+                    llm_call_id: llm_call_id.clone(),
+                    timestamp_ms: event.timestamp_ms,
+                    pid: Some(pid),
+                    comm: Some(comm.to_string()),
+                    provider: Some("anthropic".to_string()),
+                    model: Some(model.to_string()),
+                    input_tokens: input,
+                    output_tokens: output,
+                    cache_creation_tokens: 0,
+                    cache_read_tokens: cache,
+                    total_tokens: total,
+                    source: "claude_telemetry".to_string(),
+                    view_source: "view".to_string(),
+                    confidence: Some(0.80),
+                });
+                self.upsert_session_for_agent(
+                    "claude-code",
+                    "Claude Code",
+                    pid,
+                    comm,
+                    event.timestamp_ms,
+                    Some(event.timestamp_ms),
+                    Some(model),
+                    input,
+                    output,
+                    total,
+                    0.80,
+                    "claude-telemetry",
+                );
+            } else if message == "tengu_tool_use_success" {
+                let tool_name = item.get("tool_name").and_then(Value::as_str).unwrap_or("?");
+                let duration_ms = item
+                    .get("duration_ms")
+                    .and_then(Value::as_i64)
+                    .map(|v| v as u64);
+                let request_id = item.get("request_id").and_then(Value::as_str);
+                self.emit_tool_call(ToolCallRow {
+                    id: format!("claude-tool-telemetry-{}-{idx}", event.event_id),
+                    session_id: Some(format!("claude-code-pid-{pid}")),
+                    conversation_id: None,
+                    timestamp_ms: event.timestamp_ms,
+                    tool_name: Some(tool_name.to_string()),
+                    tool_call_id: request_id.map(str::to_string),
+                    start_timestamp_ms: duration_ms.and_then(|d| event.timestamp_ms.checked_sub(d)),
+                    end_timestamp_ms: Some(event.timestamp_ms),
+                    duration_ms,
+                    status: Some("completed".to_string()),
+                    input: serde_json::json!({}),
+                    output: serde_json::json!({}),
+                    related_pid: Some(pid),
+                    related_event_id: Some(event.event_id.clone()),
+                    view_source: "view".to_string(),
+                    confidence: Some(0.75),
+                });
+            }
+        }
+    }
+
+    fn ingest_gemini_stdio_stats(&mut self, event: &CanonicalEvent) {
+        if !matches!(event.kind, EventKind::StdioMessage | EventKind::StdioRpc) {
+            return;
+        }
+        let Some(payload) = event.attributes.get("data").and_then(Value::as_str) else {
+            return;
+        };
+        let Some(obj) = parse_json_str(payload) else {
+            return;
+        };
+        let Some(models) = obj.pointer("/stats/models").and_then(Value::as_object) else {
+            return;
+        };
+        let pid = event.pid.unwrap_or(0);
+        let comm = event.comm.as_deref().unwrap_or("gemini");
+        for (model, stats) in models {
+            let tokens = stats.get("tokens").unwrap_or(stats);
+            let input = json_i64(tokens, "prompt").max(json_i64(tokens, "input"));
+            let output = json_i64(tokens, "candidates")
+                + json_i64(tokens, "thoughts")
+                + json_i64(tokens, "tool");
+            let cache = json_i64(tokens, "cached");
+            let total = json_i64(tokens, "total").max(input + output + cache);
+            if total <= 0 {
+                continue;
+            }
+            let llm_call_id = format!("gemini-stdout-{}-{}", event.event_id, sanitize_id(model));
+            self.emit_token_usage(TokenUsageRow {
+                id: format!("token-{llm_call_id}"),
+                llm_call_id: llm_call_id.clone(),
+                timestamp_ms: event.timestamp_ms,
+                pid: Some(pid),
+                comm: Some(comm.to_string()),
+                provider: Some("gcp.gen_ai".to_string()),
+                model: Some(model.to_string()),
+                input_tokens: input,
+                output_tokens: output,
+                cache_creation_tokens: 0,
+                cache_read_tokens: cache,
+                total_tokens: total,
+                source: "gemini_cli_stdout_stats".to_string(),
+                view_source: "view".to_string(),
+                confidence: Some(0.85),
+            });
+            self.upsert_session_for_agent(
+                "gemini-cli",
+                "Gemini CLI",
+                pid,
+                comm,
+                event.timestamp_ms,
+                Some(event.timestamp_ms),
+                Some(model),
+                input,
+                output,
+                total,
+                0.85,
+                "gemini-stdio",
+            );
+        }
+    }
+
+    fn ingest_sse_tools(
+        &mut self,
+        event: &CanonicalEvent,
+        llm_call_id: &str,
+        pid: u32,
+        confidence: f32,
+    ) {
+        let Some(events) = event.attributes.get("sse_events").and_then(Value::as_array) else {
+            return;
+        };
+        let session_id = classify_agent(
+            event.comm.as_deref().unwrap_or_default(),
+            event.host.as_deref(),
+            None,
+            Some(&event.attributes.to_string()),
+            event.model.as_deref(),
+        )
+        .map(|agent| format!("{}-pid-{pid}", agent.agent_type));
+        for (idx, sse) in events.iter().enumerate() {
+            let Some(block) = sse.pointer("/parsed_data/content_block") else {
+                continue;
+            };
+            if block.get("type").and_then(Value::as_str) != Some("tool_use") {
+                continue;
+            }
+            let name = block.get("name").and_then(Value::as_str).unwrap_or("?");
+            let tool_call_id = block.get("id").and_then(Value::as_str);
+            let input_json = block.get("input").map(Value::to_string);
+            let tool_id = tool_call_id
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("tool-{idx}"));
+            self.emit_tool_call(ToolCallRow {
+                id: format!("tool-{llm_call_id}-{tool_id}"),
+                session_id: session_id.clone(),
+                conversation_id: Some(format!("conv-{llm_call_id}")),
+                timestamp_ms: event.timestamp_ms,
+                tool_name: Some(name.to_string()),
+                tool_call_id: tool_call_id.map(str::to_string),
+                start_timestamp_ms: Some(event.timestamp_ms),
+                end_timestamp_ms: None,
+                duration_ms: None,
+                status: Some("observed".to_string()),
+                input: parse_optional_json(input_json.as_deref()),
+                output: Value::Null,
+                related_pid: Some(pid),
+                related_event_id: Some(event.event_id.clone()),
+                view_source: "view".to_string(),
+                confidence: Some(confidence),
+            });
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn upsert_known_agent_session(
+        &mut self,
+        pid: u32,
+        comm: &str,
+        start_timestamp_ms: u64,
+        end_timestamp_ms: Option<u64>,
+        provider: Option<&str>,
+        host: Option<&str>,
+        model: Option<&str>,
+        input_tokens: i64,
+        output_tokens: i64,
+        total_tokens: i64,
+        request_body_json: Option<&str>,
+        response_body_json: Option<&str>,
+        confidence: f32,
+    ) {
+        let classifier_text = [request_body_json, response_body_json]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("\n");
+        let agent = classify_agent(comm, host.or(provider), Some(&classifier_text), None, model);
+        if let Some(agent) = agent {
+            self.upsert_session_for_agent(
+                agent.agent_type,
+                agent.agent_name,
+                pid,
+                comm,
+                start_timestamp_ms,
+                end_timestamp_ms,
+                model,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                confidence,
+                "llm",
+            );
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn upsert_session_for_agent(
+        &mut self,
+        agent_type: &'static str,
+        agent_name: &'static str,
+        pid: u32,
+        comm: &str,
+        start_timestamp_ms: u64,
+        end_timestamp_ms: Option<u64>,
+        model: Option<&str>,
+        input_tokens: i64,
+        output_tokens: i64,
+        total_tokens: i64,
+        confidence: f32,
+        view_source: &str,
+    ) {
+        let id = format!("{agent_type}-pid-{pid}");
+        let attrs = serde_json::json!({ "source": view_source }).to_string();
+        self.emit_session(SessionRow {
+            id,
+            agent_type: agent_type.to_string(),
+            agent_name: Some(agent_name.to_string()),
+            pid: Some(pid),
+            comm: Some(comm.to_string()),
+            start_timestamp_ms,
+            end_timestamp_ms,
+            status: "observed".to_string(),
+            model: model.map(str::to_string),
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            view_source: "view".to_string(),
+            confidence: Some(confidence as f64),
+            attributes: parse_json_value(&attrs),
+        });
+    }
+
+    fn ingest_process_audit(&mut self, event: &CanonicalEvent, action: &str) {
+        let target = event.attributes.get("filename").and_then(Value::as_str);
+        self.emit_audit_event(AuditEventRow {
+            id: format!("audit-{}", event.event_id),
+            timestamp_ms: event.timestamp_ms,
+            audit_type: "process".to_string(),
+            pid: event.pid,
+            comm: event.comm.clone(),
+            subject: event.comm.clone(),
+            action: Some(action.to_string()),
+            target: target.map(str::to_string),
+            status: Some(process_audit_status(action, &event.attributes).to_string()),
+            summary: event.summary.clone(),
+            details: event.attributes.clone(),
+        });
+    }
+
+    fn ingest_file_audit(&mut self, event: &CanonicalEvent) {
+        let target = event
+            .attributes
+            .get("path")
+            .or_else(|| event.attributes.get("filepath"))
+            .and_then(Value::as_str);
+        self.emit_audit_event(AuditEventRow {
+            id: format!("audit-{}", event.event_id),
+            timestamp_ms: event.timestamp_ms,
+            audit_type: "file".to_string(),
+            pid: event.pid,
+            comm: event.comm.clone(),
+            subject: event.comm.clone(),
+            action: Some("write".to_string()),
+            target: target.map(str::to_string),
+            status: Some("observed".to_string()),
+            summary: event.summary.clone(),
+            details: event.attributes.clone(),
+        });
+    }
+}
+
+struct AgentClass {
+    agent_type: &'static str,
+    agent_name: &'static str,
+}
+
+fn classify_agent(
+    comm: &str,
+    host: Option<&str>,
+    request_text: Option<&str>,
+    response_text: Option<&str>,
+    model: Option<&str>,
+) -> Option<AgentClass> {
+    let haystack = [Some(comm), host, request_text, response_text, model]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("\n")
+        .to_ascii_lowercase();
+    if haystack.contains("openclaw") {
+        Some(AgentClass {
+            agent_type: "openclaw",
+            agent_name: "OpenClaw",
+        })
+    } else if haystack.contains("gemini")
+        || haystack.contains("cloudcode-pa.googleapis.com")
+        || haystack.contains("generativelanguage")
+    {
+        Some(AgentClass {
+            agent_type: "gemini-cli",
+            agent_name: "Gemini CLI",
+        })
+    } else if haystack.contains("claude") || haystack.contains("anthropic") {
+        Some(AgentClass {
+            agent_type: "claude-code",
+            agent_name: "Claude Code",
+        })
+    } else {
+        None
+    }
+}
+
+fn response_body_json(event: &CanonicalEvent) -> Option<Value> {
+    body_json(&event.attributes)
+        .or_else(|| (event.source == "sse_processor").then(|| event.attributes.clone()))
+}
+
+fn process_audit_status(action: &str, attributes: &Value) -> &'static str {
+    if action != "exit" {
+        return "observed";
+    }
+    match attributes.get("exit_code").and_then(Value::as_i64) {
+        Some(0) => "success",
+        Some(_) => "failure",
+        None => "observed",
+    }
+}
+
+fn is_writable_open(event: &CanonicalEvent) -> bool {
+    let flags = event
+        .attributes
+        .get("flags")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    const O_ACCMODE: i64 = 0o3;
+    const O_CREAT: i64 = 0o100;
+    const O_TRUNC: i64 = 0o1000;
+    const O_APPEND: i64 = 0o2000;
+    (flags & O_ACCMODE) != 0 || (flags & (O_CREAT | O_TRUNC | O_APPEND)) != 0
+}
+
+fn parse_json_str(text: &str) -> Option<Value> {
+    serde_json::from_str(text).ok()
+}
+
+fn json_i64(value: &Value, key: &str) -> i64 {
+    value
+        .get(key)
+        .and_then(|value| value.as_i64().or_else(|| value.as_u64().map(|v| v as i64)))
+        .unwrap_or_default()
+}
+
+fn number_or_string(value: Option<&Value>) -> Option<f64> {
+    value.and_then(|v| {
+        v.as_f64()
+            .or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))
+    })
+}
+
+fn network_target_from_event(event: &CanonicalEvent) -> Option<NetworkTargetRow> {
+    let host = event.host.as_deref().filter(|host| !host.is_empty())?;
+    let path = event.path.as_deref().filter(|path| !path.is_empty());
+    let error_count = i64::from(
+        event.kind == EventKind::LlmError
+            || event.status_code.map(|code| code >= 400).unwrap_or(false),
+    );
+    Some(NetworkTargetRow {
+        pid: event.pid,
+        comm: event.comm.clone(),
+        host: host.to_string(),
+        path: path.map(str::to_string),
+        count: 1,
+        error_count,
+        first_timestamp_ms: Some(event.timestamp_ms),
+        last_timestamp_ms: Some(event.timestamp_ms),
+    })
+}
+
+fn resource_sample_from_event(event: &CanonicalEvent) -> Option<ResourceSampleRow> {
+    if event.kind != EventKind::ResourceSample {
+        return None;
+    }
+    let cpu = number_or_string(event.attributes.get("cpu").and_then(|v| v.get("percent")));
+    let rss_mb = number_or_string(event.attributes.get("memory").and_then(|v| v.get("rss_mb")));
+    Some(ResourceSampleRow {
+        timestamp_ms: event.timestamp_ms,
+        pid: event.pid,
+        comm: event.comm.clone(),
+        cpu_percent: cpu,
+        rss_mb: rss_mb.map(|v| v.max(0.0) as i64),
+    })
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn sanitize_id(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn llm_call_row(
+    id: &str,
+    start_timestamp_ms: u64,
+    end_timestamp_ms: Option<u64>,
+    pid: u32,
+    comm: &str,
+    provider: Option<&str>,
+    model: Option<&str>,
+    host: Option<&str>,
+    path: Option<&str>,
+    status_code: Option<u16>,
+    request_body_json: Option<&str>,
+    response_body_json: Option<&str>,
+) -> LlmCallRow {
+    LlmCallRow {
+        id: id.to_string(),
+        start_timestamp_ms,
+        end_timestamp_ms,
+        pid: Some(pid),
+        comm: Some(comm.to_string()),
+        provider: provider.map(str::to_string),
+        model: model.map(str::to_string),
+        host: host.map(str::to_string),
+        path: path.map(str::to_string),
+        status_code,
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+        request: parse_optional_json(request_body_json),
+        response: parse_optional_json(response_body_json),
+    }
+}
+
+fn parse_json_value(text: &str) -> Value {
+    serde_json::from_str(text).unwrap_or_else(|_| Value::String(text.to_string()))
+}
+
+fn parse_optional_json(text: Option<&str>) -> Value {
+    text.map(parse_json_value).unwrap_or(Value::Null)
+}

@@ -34,10 +34,8 @@ impl Analyzer for StorageAnalyzer {
         let view = Arc::clone(&self.view);
 
         let processed = stream.map(move |event| {
-            if let Ok(mut view) = view.lock()
-                && let Err(e) = view.ingest_event(&event)
-            {
-                log::warn!("StorageAnalyzer: failed to ingest event: {}", e);
+            if let Ok(mut view) = view.lock() {
+                view.ingest_event(&event);
             }
             event
         });

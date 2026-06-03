@@ -6,11 +6,11 @@ use crate::output::{
     print_json, print_llm_prompts, print_local_audit, print_replay, print_session_summary,
     print_token_summary, prompt_text_chars,
 };
+use crate::sinks::SqliteSink;
 use crate::sources::session::{self as local_sessions, LocalSession};
 use crate::sources::sqlite::SqliteSource;
-use crate::sinks::SqliteSink;
 use crate::view::MaterializedView;
-use crate::view::types::{Snapshot, SnapshotOptions};
+use crate::view::types::SnapshotOptions;
 
 #[cfg(test)]
 use crate::framework::storage::sqlite::SqliteStore;
@@ -109,6 +109,7 @@ impl SessionSummary {
             audit_limit: 50_000,
         });
         let local_sessions = local_sessions::from_snapshot(&snap);
+        let local_snap = local_sessions::materialized_snapshot(&local_sessions);
         let s = &snap.summary;
         let duration_s = match (s.start_timestamp_ms, s.end_timestamp_ms) {
             (Some(start), Some(end)) if end > start => (end - start) as f64 / 1000.0,
@@ -142,11 +143,11 @@ impl SessionSummary {
                 prompt_chars.add(chars);
             }
         }
-        let local_model_rows = local_sessions::model_rows(&local_sessions);
-        let models = if local_sessions.iter().any(LocalSession::has_tokens) {
+        let local_model_rows = local_snap.model_rows();
+        let models = if local_snap.materialized_token_totals() != (0, 0, 0) {
             local_model_rows
         } else {
-            db_models(&snap)
+            snap.model_rows()
         };
         let mut processes = BTreeMap::new();
         for row in &snap.audit_events {
@@ -258,7 +259,8 @@ impl SessionSummary {
             first_tool_after_ms: None,
             prompt_chars,
             llm_latency_ms: SummaryStats::default(),
-            models: local_sessions::model_rows(std::slice::from_ref(session)),
+            models: local_sessions::materialized_snapshot(std::slice::from_ref(session))
+                .model_rows(),
             processes: BTreeMap::new(),
             process_exits: BTreeMap::new(),
             tool_calls: session.tools.clone(),
@@ -269,48 +271,6 @@ impl SessionSummary {
             endpoints: vec![],
         }
     }
-}
-
-fn db_models(snap: &Snapshot) -> Vec<(String, i64, i64, i64, i64)> {
-    let mut models = snap
-        .token_summary
-        .iter()
-        .filter(|row| row.input_tokens != 0 || row.output_tokens != 0 || row.total_tokens != 0)
-        .map(|row| {
-            (
-                row.group.clone(),
-                (
-                    row.input_tokens,
-                    row.output_tokens,
-                    row.total_tokens,
-                    row.calls,
-                ),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
-
-    for session in &snap.sessions {
-        if session.input_tokens == 0 && session.output_tokens == 0 && session.total_tokens == 0 {
-            continue;
-        }
-        let model = session
-            .model
-            .as_ref()
-            .filter(|model| !model.is_empty())
-            .cloned()
-            .unwrap_or_else(|| session.agent_type.clone());
-        models.entry(model).or_insert((
-            session.input_tokens,
-            session.output_tokens,
-            session.total_tokens,
-            1,
-        ));
-    }
-
-    models
-        .into_iter()
-        .map(|(model, (input, output, total, calls))| (model, input, output, total, calls))
-        .collect()
 }
 
 fn after_start(start_timestamp_ms: Option<u64>, timestamp_ms: u64) -> Option<u64> {
@@ -399,7 +359,7 @@ mod tests {
         run_replay(input.to_str().unwrap(), db.to_str().unwrap()).unwrap();
 
         let view = SqliteSource::open(&db).unwrap().into_view();
-        let rows = view.token_summary("model").unwrap();
+        let rows = view.token_summary("model");
         assert_eq!(rows[0].group, "claude-sonnet-4");
         assert_eq!(rows[0].total_tokens, 15);
     }
@@ -434,12 +394,12 @@ mod tests {
             .unwrap();
 
         let view = SqliteSource::open(&db).unwrap().into_view();
-        let tokens = view.token_summary("model").unwrap();
+        let tokens = view.token_summary("model");
         assert_eq!(tokens[0].group, "claude-sonnet-4");
         assert_eq!(tokens[0].total_tokens, 15);
         assert_eq!(tokens[0].calls, 1);
 
-        let calls = view.llm_call_rows(10).unwrap();
+        let calls = view.llm_call_rows(10);
         assert_eq!(calls[0].total_tokens, 15);
     }
 
@@ -501,7 +461,7 @@ mod tests {
                 json!({"event": "FILE_WRITE", "path": "/tmp/agentsight-summary/sub/b.txt"}),
             ),
         ] {
-            view.ingest_event(&event).unwrap();
+            view.ingest_event(&event);
         }
 
         view.ingest_update(&ViewUpdate::ToolCall(crate::view::types::ToolCallRow {
@@ -521,8 +481,7 @@ mod tests {
             related_event_id: None,
             view_source: "claude-code".to_string(),
             confidence: None,
-        }))
-        .unwrap();
+        }));
 
         let summary = SessionSummary::from_sqlite(db.to_str().unwrap()).unwrap();
         assert_eq!(summary.duration_s, 0.9);
