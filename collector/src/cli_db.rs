@@ -11,9 +11,9 @@ use crate::view::MaterializedView;
 use crate::view::types::{Snapshot, SnapshotOptions};
 
 #[cfg(test)]
-use crate::framework::storage::{SqliteStore, ViewProjector, ViewUpdate};
+use crate::framework::storage::{SqliteStore, ViewProjector};
 #[cfg(test)]
-use crate::view::types::TokenUsageRow;
+use crate::view::types::{TokenUsageRow, ViewUpdate};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 

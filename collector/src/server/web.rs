@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-use crate::framework::storage::SnapshotOptions;
 use crate::server::assets::FrontendAssets;
 use crate::view::MaterializedView;
+use crate::view::types::SnapshotOptions;
 use http_body_util::Full;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;

@@ -3,10 +3,9 @@
 
 use crate::framework::analyzers::{Analyzer, AnalyzerError};
 use crate::framework::runners::EventStream;
-use crate::framework::storage::{ViewUpdate, ViewUpdateSink};
 use crate::view::types::{
     AuditEventRow, LlmCallRow, NetworkTargetRow, ResourceSampleRow, SessionRow, TokenUsageRow,
-    ToolCallRow,
+    ToolCallRow, ViewUpdate, ViewUpdateSink,
 };
 use async_trait::async_trait;
 use futures::stream::StreamExt;

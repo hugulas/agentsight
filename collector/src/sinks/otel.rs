@@ -18,8 +18,7 @@
 //! stable view data to OTLP.
 //!
 use crate::framework::analyzers::AnalyzerError;
-use crate::framework::storage::ViewUpdateSink;
-use crate::view::types::LlmCallRow;
+use crate::view::types::{LlmCallRow, ViewUpdateSink};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use hyper_util::client::legacy::Client;

@@ -4,7 +4,6 @@
 use crate::framework::binary_extractor::BinaryExtractor;
 use crate::framework::core::Event;
 use crate::framework::runners::{ProcessRunner, Runner};
-use crate::framework::storage::sqlite::StorageResult;
 use crate::output::{
     AgentTopOutput, AgentTopRow, ResourcePeaks, StatOutput, TopOptions, TopSection, clear_screen,
     draw_live_top_tui, next_view_key, print_agent_top, print_json, print_stat,
@@ -13,7 +12,7 @@ use crate::output::{
 use crate::sources::proc::{self as procfs, ProcInfo, ProcSnapshot as LiveSample};
 use crate::sources::session::{self as local_sessions, LocalSession};
 use crate::view::MaterializedView;
-use crate::view::types::{SessionRow, Snapshot, SnapshotOptions};
+use crate::view::types::{SessionRow, Snapshot, SnapshotOptions, StorageResult};
 use crossterm::{
     cursor::{Hide, Show},
     event::{self, Event as CrosstermEvent, KeyCode, KeyEventKind, KeyModifiers},
@@ -668,8 +667,12 @@ fn next_sort_key(current: &str) -> String {
 }
 
 fn load_stat(db: &str) -> StorageResult<StatOutput> {
-    let (snapshot, resources) = load_snapshot_and_resources(db)?;
-    let tool_calls = load_tool_calls(db)?;
+    let mut view = MaterializedView::open_sqlite(db)?;
+    let snapshot = view.export_snapshot(SnapshotOptions {
+        audit_limit: 50_000,
+    })?;
+    let resources = resource_peaks_from_samples(view.resource_samples()?);
+    let tool_calls = view.tool_call_count()?;
     let (input_tokens, output_tokens, total_tokens) = stat_token_totals(&snapshot);
 
     let mut process_execs = 0usize;
@@ -1673,11 +1676,6 @@ fn load_snapshot_and_resources(db: &str) -> StorageResult<(Snapshot, ResourcePea
     Ok((snapshot, resources))
 }
 
-fn load_tool_calls(db: &str) -> StorageResult<i64> {
-    let mut view = MaterializedView::open_sqlite(db)?;
-    view.tool_call_count()
-}
-
 fn resource_peaks_from_samples(samples: Vec<(Option<f64>, Option<i64>)>) -> ResourcePeaks {
     let mut peaks = ResourcePeaks::default();
     for (cpu, rss_mb) in samples {
@@ -1770,6 +1768,7 @@ mod tests {
     use super::*;
     use crate::framework::core::Event;
     use crate::output::tui::{tui_diagnostic_lines, tui_status_line};
+    use crate::view::types::{AuditEventRow, SnapshotSummary};
     use serde_json::json;
     use std::fs::File;
 
@@ -2002,7 +2001,7 @@ mod tests {
         let snapshot = Snapshot {
             schema_version: 1,
             generated_at: "now".to_string(),
-            summary: crate::framework::storage::sqlite::SnapshotSummary {
+            summary: SnapshotSummary {
                 source: "sqlite".to_string(),
                 view_events: 0,
                 llm_calls: 1,
@@ -2056,7 +2055,7 @@ mod tests {
         let snapshot = Snapshot {
             schema_version: 1,
             generated_at: "now".to_string(),
-            summary: crate::framework::storage::sqlite::SnapshotSummary {
+            summary: SnapshotSummary {
                 source: "sqlite".to_string(),
                 view_events: 0,
                 llm_calls: 1,
@@ -2073,7 +2072,7 @@ mod tests {
             },
             token_summary: Vec::new(),
             network_targets: Vec::new(),
-            audit_events: vec![crate::framework::storage::sqlite::AuditEventRow {
+            audit_events: vec![AuditEventRow {
                 id: "audit-1".to_string(),
                 timestamp_ms: 1_000,
                 audit_type: "file".to_string(),

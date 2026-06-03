@@ -5,4 +5,4 @@ pub mod analyzer;
 pub mod sqlite;
 
 pub use analyzer::StorageAnalyzer;
-pub use sqlite::{SnapshotOptions, SqliteStore, ViewProjector, ViewUpdate, ViewUpdateSink};
+pub use sqlite::{SqliteStore, ViewProjector, ViewUpdate, ViewUpdateSink};
