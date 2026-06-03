@@ -2,7 +2,7 @@
 // Copyright (c) 2026 eunomia-bpf org.
 
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -10,6 +10,73 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::text::{short_session_id, truncate_text};
 use crate::view::MaterializedView;
 use crate::view::types::{SessionRow, Snapshot, SnapshotOptions, TokenUsageRow, ViewUpdate};
+
+pub(crate) struct SessionCache {
+    entries: HashMap<PathBuf, CacheEntry>,
+}
+
+struct CacheEntry {
+    mtime: SystemTime,
+    session: Option<LocalSession>,
+}
+
+impl SessionCache {
+    pub(crate) fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+        }
+    }
+
+    pub(crate) fn discover(&mut self, limit: usize) -> Vec<LocalSession> {
+        let mut candidates: Vec<(SystemTime, &str, PathBuf)> = Vec::new();
+        for (agent, dir) in local_session_dirs() {
+            walk_jsonl(&dir, &mut |path, meta| {
+                candidates.push((
+                    meta.modified().unwrap_or(UNIX_EPOCH),
+                    agent,
+                    path.to_path_buf(),
+                ));
+            });
+        }
+        candidates.sort_by_key(|(updated, _, _)| std::cmp::Reverse(*updated));
+
+        let target = limit.clamp(1, 25);
+        let scan = target.saturating_mul(3).clamp(10, 75);
+
+        let mut live_paths: HashSet<PathBuf> = HashSet::new();
+        let mut sessions = Vec::new();
+        let mut seen = HashSet::new();
+
+        for (mtime, agent, path) in candidates.into_iter().take(scan) {
+            live_paths.insert(path.clone());
+            let session = match self.entries.get(&path) {
+                Some(entry) if entry.mtime == mtime => entry.session.clone(),
+                _ => {
+                    let parsed = read_session_path_with_source(agent, &path, mtime);
+                    self.entries.insert(
+                        path.clone(),
+                        CacheEntry {
+                            mtime,
+                            session: parsed.clone(),
+                        },
+                    );
+                    parsed
+                }
+            };
+            if let Some(session) = session {
+                if seen.insert(session.display_id.clone()) {
+                    sessions.push(session);
+                }
+                if sessions.len() >= target {
+                    break;
+                }
+            }
+        }
+
+        self.entries.retain(|path, _| live_paths.contains(path));
+        sessions
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct LocalSession {
@@ -86,42 +153,6 @@ pub(crate) fn discover(limit: usize) -> Vec<LocalSession> {
 
 pub(crate) fn latest() -> Option<LocalSession> {
     discover(25).into_iter().next()
-}
-
-pub(crate) fn sessions_from_path_strings<'a>(
-    targets: impl IntoIterator<Item = &'a str>,
-) -> Vec<LocalSession> {
-    let mut seen = BTreeSet::new();
-    targets
-        .into_iter()
-        .filter_map(session_log_path_from_str)
-        .filter_map(|path| {
-            let path = normalize_session_log_path(&path);
-            seen.insert(path.clone()).then(|| {
-                read_session_path_with_source(
-                    local_session_source(&path)?,
-                    &path,
-                    path_updated(&path),
-                )
-            })?
-        })
-        .collect()
-}
-
-pub(crate) fn from_snapshot(snapshot: &Snapshot) -> Vec<LocalSession> {
-    sessions_from_path_strings(
-        snapshot
-            .audit_events
-            .iter()
-            .filter(|row| row.audit_type == "file")
-            .filter_map(|row| row.target.as_deref()),
-    )
-}
-
-pub(crate) fn token_totals_from_snapshot(snapshot: &Snapshot) -> Option<(i64, i64, i64)> {
-    let local_snapshot = materialized_snapshot(&from_snapshot(snapshot));
-    let totals = local_snapshot.materialized_token_totals();
-    (totals.0 > 0 || totals.1 > 0 || totals.2 > 0).then_some(totals)
 }
 
 pub(crate) fn view_id(session: &LocalSession) -> String {
@@ -220,24 +251,6 @@ fn sanitize_id(value: &str) -> String {
         .collect()
 }
 
-pub(crate) fn tool_counts(sessions: &[LocalSession]) -> BTreeMap<String, usize> {
-    let mut tools = BTreeMap::new();
-    for session in sessions {
-        for (tool, count) in &session.tools {
-            *tools.entry(tool.clone()).or_default() += count;
-        }
-    }
-    tools
-}
-
-pub(crate) fn prompt_char_counts(sessions: &[LocalSession]) -> Vec<u64> {
-    sessions
-        .iter()
-        .filter_map(|session| session.prompt_preview.as_ref())
-        .map(|prompt| prompt.chars().count() as u64)
-        .collect()
-}
-
 pub(crate) fn matches_filter(
     session: &LocalSession,
     pid_filter: Option<u32>,
@@ -332,13 +345,6 @@ fn read_session_path_with_source(
 ) -> Option<LocalSession> {
     let content = fs::read_to_string(path).ok()?;
     parse_content(agent, path, updated, &content)
-}
-
-fn path_updated(path: &Path) -> SystemTime {
-    path.metadata()
-        .ok()
-        .and_then(|meta| meta.modified().ok())
-        .unwrap_or(UNIX_EPOCH)
 }
 
 pub(crate) fn parse_content(

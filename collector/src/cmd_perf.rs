@@ -6,7 +6,6 @@ use crate::output::{
     print_agent_top, print_json, print_stat,
 };
 use crate::sources::proc as procfs;
-use crate::sources::session::{self as local_sessions, LocalSession};
 use crate::sources::sqlite::SqliteSource;
 use crate::text::short_session_id;
 use crate::view::types::{SessionRow, Snapshot, SnapshotOptions, StorageResult};
@@ -17,6 +16,9 @@ use std::time::Duration;
 
 mod live;
 pub(crate) use live::{run_live_top_query, run_live_top_tui};
+
+#[cfg(test)]
+use crate::sources::session as local_sessions;
 
 pub(crate) fn run_stat_query(
     db: &str,
@@ -71,9 +73,7 @@ fn load_stat(db: &str) -> StorageResult<StatOutput> {
     });
     let resources = resource_peaks_from_samples(view.resource_samples());
     let tool_calls = view.tool_call_count();
-    let (input_tokens, output_tokens, total_tokens) =
-        local_sessions::token_totals_from_snapshot(&snapshot)
-            .unwrap_or_else(|| snapshot.materialized_token_totals());
+    let (input_tokens, output_tokens, total_tokens) = snapshot.materialized_token_totals();
 
     let mut process_execs = 0usize;
     let mut process_exits = 0usize;
@@ -143,33 +143,10 @@ fn build_session_top<'a>(
     limit: usize,
     options: &TopOptions,
 ) -> AgentTopOutput<'a> {
-    let local_sessions = if options.pid.is_some() {
-        Vec::new()
-    } else {
-        local_sessions::from_snapshot(snapshot)
-            .into_iter()
-            .filter(|session| {
-                local_sessions::matches_filter(session, options.pid, options.comm.as_deref())
-            })
-            .collect()
-    };
-    let local_snapshot = local_sessions::materialized_snapshot(&local_sessions);
-    let local_total_tokens = local_snapshot.materialized_token_totals().2;
-    let rows = session_agent_rows(
-        snapshot,
-        resources,
-        options,
-        &local_sessions,
-        &local_snapshot,
-    );
-    let sections = top_sections(snapshot, limit, &options.view, &local_snapshot);
+    let rows = session_agent_rows(snapshot, resources, options);
+    let sections = top_sections(snapshot, limit, &options.view);
     let mut notes =
         vec!["static session view; run without --db for live /proc agent process top".to_string()];
-    if !local_sessions.is_empty() {
-        notes.push(
-            "session tokens/tools come from touched local ~/.claude or ~/.codex logs".to_string(),
-        );
-    }
     if options.pid.is_some() || options.comm.is_some() {
         notes.push("filter applied before process-family aggregation".to_string());
     }
@@ -179,11 +156,7 @@ fn build_session_top<'a>(
         duration_s: duration_s(snapshot),
         view_events: snapshot.summary.view_events,
         llm_calls: snapshot.summary.llm_calls,
-        total_tokens: if local_total_tokens > 0 {
-            local_total_tokens
-        } else {
-            snapshot.summary.total_tokens
-        },
+        total_tokens: snapshot.summary.total_tokens,
         rows,
         sections,
         failures: recent_failures(snapshot, 5),
@@ -191,27 +164,13 @@ fn build_session_top<'a>(
     }
 }
 
-fn top_sections(
-    snapshot: &Snapshot,
-    limit: usize,
-    view: &str,
-    local_snapshot: &Snapshot,
-) -> Vec<TopSection> {
+fn top_sections(snapshot: &Snapshot, limit: usize, view: &str) -> Vec<TopSection> {
     let audit = &snapshot.audit_events;
-    let local_model_counts = local_snapshot
+    let model_counts = snapshot
         .token_summary
         .iter()
         .map(|row| (row.group.clone(), row.total_tokens))
-        .collect::<BTreeMap<_, _>>();
-    let model_counts = if local_model_counts.is_empty() {
-        snapshot
-            .token_summary
-            .iter()
-            .map(|row| (row.group.clone(), row.total_tokens))
-            .collect()
-    } else {
-        local_model_counts
-    };
+        .collect();
     let all = vec![
         (
             "Processes",
@@ -278,11 +237,8 @@ fn session_agent_rows(
     snapshot: &Snapshot,
     resources: &ResourcePeaks,
     options: &TopOptions,
-    local_sessions: &[LocalSession],
-    local_snapshot: &Snapshot,
 ) -> Vec<AgentTopRow> {
-    let top_model = dominant_model(snapshot).or_else(|| dominant_model(local_snapshot));
-    let local_total_tokens = local_snapshot.materialized_token_totals().2;
+    let top_model = dominant_model(snapshot);
     let db_age_s = snapshot_age_s(snapshot);
     let mut processes = BTreeMap::<u32, ProcessMeta>::new();
     for row in &snapshot.audit_events {
@@ -360,9 +316,6 @@ fn session_agent_rows(
             .sum::<i64>();
         let tokens = if family_tokens > 0 {
             Some(family_tokens)
-        } else if local_total_tokens > 0 && !assigned_global_tokens {
-            assigned_global_tokens = true;
-            Some(local_total_tokens)
         } else if tokens_by_pid.is_empty()
             && !assigned_global_tokens
             && snapshot.summary.total_tokens > 0
@@ -436,40 +389,6 @@ fn session_agent_rows(
                     .comm
                     .clone()
                     .unwrap_or_else(|| session.agent_type.clone()),
-            });
-        }
-    }
-
-    if rows.is_empty() && !local_sessions.is_empty() {
-        for session in local_sessions {
-            if !options.matches(
-                None,
-                Some(&session.agent),
-                session.prompt_preview.as_deref(),
-            ) {
-                continue;
-            }
-            rows.push(AgentTopRow {
-                session: session.display_id.clone(),
-                agent: session.agent.clone(),
-                pid: None,
-                model: session.model.clone().or_else(|| top_model.clone()),
-                age_s: session.age_s(),
-                cpu_percent: 0.0,
-                rss_mb: 0,
-                processes: 0,
-                tokens: (session.total_tokens > 0).then_some(session.total_tokens),
-                tools: session.tools_total(),
-                execs: 0,
-                failures: 0,
-                files: 0,
-                network: 0,
-                unattributed: 0,
-                trace: "local+db".to_string(),
-                command: session
-                    .prompt_preview
-                    .clone()
-                    .unwrap_or_else(|| session.path.display().to_string()),
             });
         }
     }
@@ -785,8 +704,6 @@ mod tests {
             details: serde_json::json!({}),
         }];
 
-        let totals = local_sessions::token_totals_from_snapshot(&snapshot)
-            .unwrap_or_else(|| snapshot.materialized_token_totals());
-        assert_eq!(totals, (8, 5, 13));
+        assert_eq!(snapshot.materialized_token_totals(), (8, 5, 13));
     }
 }

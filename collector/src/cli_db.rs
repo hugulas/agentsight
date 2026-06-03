@@ -108,8 +108,6 @@ impl SessionSummary {
         let snap = view.export_snapshot(SnapshotOptions {
             audit_limit: 50_000,
         });
-        let local_sessions = local_sessions::from_snapshot(&snap);
-        let local_snap = local_sessions::materialized_snapshot(&local_sessions);
         let s = &snap.summary;
         let duration_s = match (s.start_timestamp_ms, s.end_timestamp_ms) {
             (Some(start), Some(end)) if end > start => (end - start) as f64 / 1000.0,
@@ -136,19 +134,7 @@ impl SessionSummary {
                 llm_latency_ms.add(delta);
             }
         }
-        let local_prompt_chars = local_sessions::prompt_char_counts(&local_sessions);
-        if !local_prompt_chars.is_empty() {
-            prompt_chars = SummaryStats::default();
-            for chars in local_prompt_chars {
-                prompt_chars.add(chars);
-            }
-        }
-        let local_model_rows = local_snap.model_rows();
-        let models = if local_snap.materialized_token_totals() != (0, 0, 0) {
-            local_model_rows
-        } else {
-            snap.model_rows()
-        };
+        let models = snap.model_rows();
         let mut processes = BTreeMap::new();
         for row in &snap.audit_events {
             if row.action.as_deref() == Some("exec") {
@@ -215,11 +201,8 @@ impl SessionSummary {
         let first_tool_timestamp_ms = view.first_tool_timestamp_ms();
         let first_tool_after_ms =
             first_tool_timestamp_ms.and_then(|ts| after_start(s.start_timestamp_ms, ts));
-        let mut tool_calls = local_sessions::tool_counts(&local_sessions);
+        let tool_calls = view.tool_counts();
         let mut tool_duration_ms = SummaryStats::default();
-        if tool_calls.is_empty() {
-            tool_calls = view.tool_counts();
-        }
         for duration_ms in view.tool_durations_ms() {
             tool_duration_ms.add(duration_ms);
         }
@@ -362,6 +345,15 @@ mod tests {
         let rows = view.token_summary("model");
         assert_eq!(rows[0].group, "claude-sonnet-4");
         assert_eq!(rows[0].total_tokens, 15);
+    }
+
+    #[test]
+    fn sqlite_source_does_not_create_missing_db() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = temp.path().join("missing.db");
+
+        assert!(SqliteSource::open(&db).is_err());
+        assert!(!db.exists());
     }
 
     #[test]
@@ -535,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_summary_reads_touched_local_claude_log_without_projection() {
+    fn sqlite_summary_does_not_read_touched_local_claude_log_without_projection() {
         let temp = tempfile::tempdir().unwrap();
         let db = temp.path().join("local-log.db");
         let session_dir = temp.path().join(".claude/projects/test");
@@ -563,11 +555,8 @@ mod tests {
             .unwrap();
 
         let summary = SessionSummary::from_sqlite(db.to_str().unwrap()).unwrap();
-        assert_eq!(
-            summary.models,
-            vec![("claude-opus-4-6".to_string(), 3, 11, 26, 1)]
-        );
-        assert_eq!(summary.tool_calls.get("Bash"), Some(&1));
+        assert!(summary.models.is_empty());
+        assert!(summary.tool_calls.is_empty());
 
         let token_rows: i64 = store
             .connection()
@@ -582,7 +571,7 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_summary_uses_db_tokens_when_touched_local_log_has_no_usage() {
+    fn sqlite_summary_uses_db_tokens_without_local_log_overlay() {
         let temp = tempfile::tempdir().unwrap();
         let db = temp.path().join("local-log-no-usage.db");
         let session_dir = temp.path().join(".claude/projects/test");
@@ -617,7 +606,7 @@ mod tests {
 
         let summary = SessionSummary::from_sqlite(db.to_str().unwrap()).unwrap();
         assert_eq!(summary.models, vec![("ssl-model".to_string(), 8, 5, 13, 1)]);
-        assert_eq!(summary.prompt_chars.total, 17);
+        assert_eq!(summary.prompt_chars.total, 0);
     }
 
     #[test]

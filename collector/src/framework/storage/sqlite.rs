@@ -5,7 +5,7 @@ use crate::view::types::{
     AuditEventRow, LlmCallRow, NetworkTargetRow, ResourceSampleRow, SessionRow, StorageResult,
     TokenUsageRow, ToolCallRow, ViewUpdate,
 };
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OpenFlags, params};
 use serde_json::Value;
 use std::path::Path;
 
@@ -20,6 +20,12 @@ impl SqliteStore {
         let mut store = Self { conn };
         store.init()?;
         Ok(store)
+    }
+
+    pub fn open_readonly(path: impl AsRef<Path>) -> StorageResult<Self> {
+        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        reject_legacy_raw_schema(&conn)?;
+        Ok(Self { conn })
     }
 
     #[cfg(test)]
@@ -249,7 +255,7 @@ impl SqliteStore {
              ORDER BY start_timestamp_ms DESC
              LIMIT ?1",
         )?;
-        let rows = stmt.query_map(params![limit.clamp(1, 10_000) as i64], |row| {
+        let rows = stmt.query_map(params![bounded_limit(limit)], |row| {
             let request_json: String = row.get(10)?;
             let response_json: String = row.get(11)?;
             Ok(LlmCallRow {

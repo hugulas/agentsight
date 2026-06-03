@@ -173,10 +173,20 @@ impl LiveEbpfCapture {
     }
 }
 
-#[derive(Default)]
 struct LiveView {
     previous: Option<LiveSample>,
     bindings: LiveSessionBindings,
+    session_cache: local_sessions::SessionCache,
+}
+
+impl Default for LiveView {
+    fn default() -> Self {
+        Self {
+            previous: None,
+            bindings: LiveSessionBindings::default(),
+            session_cache: local_sessions::SessionCache::new(),
+        }
+    }
 }
 
 impl LiveView {
@@ -188,7 +198,7 @@ impl LiveView {
     ) -> io::Result<AgentTopOutput<'static>> {
         let sample = LiveSample::collect()?;
         let capture_snapshot = capture.map(LiveEbpfCapture::snapshot);
-        let local_sessions = discover_local_top_sessions(options, limit);
+        let local_sessions = discover_local_top_sessions(&mut self.session_cache, options, limit);
         let session_view = local_sessions::materialized_view(&local_sessions);
         let session_snapshot = session_view.export_snapshot(SnapshotOptions {
             audit_limit: 10_000,
@@ -242,6 +252,9 @@ impl LiveView {
             });
             let live = live_match
                 .and_then(|(idx, trace)| live_rows.get(idx).cloned().map(|row| (row, trace)));
+            if options.pid.is_some() && live.is_none() {
+                continue;
+            }
             if let Some(pid) = live.as_ref().and_then(|(row, _)| row.pid) {
                 used_live_pids.insert(pid);
             }
@@ -997,8 +1010,13 @@ fn live_matching_ancestor(proc_info: &ProcInfo, sample: &LiveSample, options: &T
     false
 }
 
-fn discover_local_top_sessions(options: &TopOptions, limit: usize) -> Vec<LocalSession> {
-    local_sessions::discover(limit)
+fn discover_local_top_sessions(
+    cache: &mut local_sessions::SessionCache,
+    options: &TopOptions,
+    limit: usize,
+) -> Vec<LocalSession> {
+    cache
+        .discover(limit)
         .into_iter()
         .filter(|session| {
             local_sessions::matches_filter(session, options.pid, options.comm.as_deref())
@@ -1171,6 +1189,40 @@ mod tests {
             bindings.link_trace(&session, &row, &test_live_sample(1, 11), &HashMap::new()),
             None
         );
+    }
+
+    #[test]
+    fn pid_filter_does_not_show_unbound_local_sessions() {
+        let (_temp, path) = local_sessions::create_temp_session_path("claude");
+        let session = local_sessions::parse_content(
+            "claude",
+            &path,
+            std::time::UNIX_EPOCH,
+            "{\"type\":\"result\",\"modelUsage\":{\"claude-opus\":{\"inputTokens\":3,\"outputTokens\":4}}}\n",
+        )
+        .unwrap();
+        let local_sessions = vec![session];
+        let session_snapshot = local_sessions::materialized_view(&local_sessions)
+            .export_snapshot(SnapshotOptions { audit_limit: 10 });
+        let options = TopOptions {
+            pid: Some(1),
+            comm: None,
+            sort: "cpu".to_string(),
+            view: "all".to_string(),
+        };
+
+        let mut live_view = LiveView::default();
+        let top = live_view.build_top(
+            &test_live_sample(1, 10),
+            None,
+            &local_sessions,
+            &session_snapshot,
+            &options,
+        );
+
+        assert_eq!(top.rows.len(), 1);
+        assert_eq!(top.rows[0].pid, Some(1));
+        assert_eq!(top.rows[0].trace, "proc");
     }
 
     #[test]

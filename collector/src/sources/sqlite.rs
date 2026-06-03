@@ -10,7 +10,7 @@ pub(crate) struct SqliteSource(MaterializedView);
 
 impl SqliteSource {
     pub(crate) fn open(path: impl AsRef<Path>) -> StorageResult<Self> {
-        let store = SqliteStore::open(path)?;
+        let store = SqliteStore::open_readonly(path)?;
         let mut view = MaterializedView::new();
         view.set_source("sqlite");
 

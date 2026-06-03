@@ -217,22 +217,16 @@ async fn serve_sqlite_api(
         move || -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
             let view = SqliteSource::open(&db_path)?.into_view();
             let options = SnapshotOptions { audit_limit };
+            let snapshot = view.export_snapshot(options);
             let value = match resource {
                 ApiResource::TokenSummary => serde_json::to_value(view.token_summary(&group_by))?,
-                ApiResource::Snapshot => serde_json::to_value(view.export_snapshot(options))?,
-                ApiResource::Summary => {
-                    serde_json::to_value(view.export_snapshot(options).summary)?
+                ApiResource::Snapshot => serde_json::to_value(snapshot)?,
+                ApiResource::Summary => serde_json::to_value(snapshot.summary)?,
+                ApiResource::Events | ApiResource::AuditEvents => {
+                    serde_json::to_value(snapshot.audit_events)?
                 }
-                ApiResource::Events => {
-                    serde_json::to_value(view.export_snapshot(options).network_targets)?
-                }
-                ApiResource::AuditEvents => {
-                    serde_json::to_value(view.export_snapshot(options).audit_events)?
-                }
-                ApiResource::Sessions => {
-                    serde_json::to_value(view.export_snapshot(options).sessions)?
-                }
-                ApiResource::Agents => serde_json::to_value(view.export_snapshot(options).agents)?,
+                ApiResource::Sessions => serde_json::to_value(snapshot.sessions)?,
+                ApiResource::Agents => serde_json::to_value(snapshot.agents)?,
             };
             Ok(value)
         },

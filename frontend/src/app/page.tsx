@@ -36,48 +36,213 @@ interface SnapshotEvent {
   confidence?: number | null;
 }
 
+interface SnapshotTokenSummary {
+  group: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
+  calls?: number;
+}
+
+interface SnapshotNetworkTarget {
+  pid?: number | null;
+  comm?: string | null;
+  host: string;
+  path?: string | null;
+  count?: number;
+  error_count?: number;
+  first_timestamp_ms?: number | null;
+  last_timestamp_ms?: number | null;
+}
+
+interface SnapshotAuditEvent {
+  id: string;
+  timestamp_ms: number;
+  audit_type: string;
+  pid?: number | null;
+  comm?: string | null;
+  subject?: string | null;
+  action?: string | null;
+  target?: string | null;
+  status?: string | null;
+  summary?: string | null;
+  details?: Record<string, unknown> | null;
+}
+
+interface SnapshotSession {
+  id: string;
+  agent_type: string;
+  agent_name?: string | null;
+  pid?: number | null;
+  comm?: string | null;
+  start_timestamp_ms: number;
+  end_timestamp_ms?: number | null;
+  status?: string;
+  model?: string | null;
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
+  attributes?: Record<string, unknown> | null;
+}
+
 interface AgentSightSnapshot {
   schema_version?: number;
   generated_at?: string;
   summary?: Record<string, unknown>;
   events?: SnapshotEvent[];
-  audit_events?: unknown[];
-  sessions?: unknown[];
+  token_summary?: SnapshotTokenSummary[];
+  network_targets?: SnapshotNetworkTarget[];
+  audit_events?: SnapshotAuditEvent[];
+  sessions?: SnapshotSession[];
   agents?: unknown[];
   interruptions?: unknown[];
 }
 
 function snapshotToEvents(snapshot: AgentSightSnapshot): Event[] {
-  if (!Array.isArray(snapshot.events)) {
-    return [];
+  if (Array.isArray(snapshot.events) && snapshot.events.length > 0) {
+    return snapshot.events
+      .filter(event => event && typeof event.timestamp_ms === 'number' && event.source)
+      .map((event, index) => ({
+        id: event.id || `${event.source}-${event.timestamp_ms}-${index}`,
+        timestamp: event.timestamp_ms,
+        source: event.source,
+        pid: event.pid ?? 0,
+        comm: event.comm ?? '',
+        data: {
+          event: 'SQLITE_CANONICAL_EVENT',
+          kind: event.kind,
+          severity: event.severity,
+          summary: event.summary,
+          host: event.host,
+          method: event.method,
+          path: event.path,
+          status_code: event.status_code,
+          provider: event.provider,
+          model: event.model,
+          session_id: event.session_id,
+          conversation_id: event.conversation_id,
+          adapter_id: event.adapter_id,
+          confidence: event.confidence,
+        },
+      }))
+      .sort((a, b) => a.timestamp - b.timestamp);
   }
 
-  return snapshot.events
-    .filter(event => event && typeof event.timestamp_ms === 'number' && event.source)
-    .map((event, index) => ({
-      id: event.id || `${event.source}-${event.timestamp_ms}-${index}`,
-      timestamp: event.timestamp_ms,
-      source: event.source,
-      pid: event.pid ?? 0,
-      comm: event.comm ?? '',
-      data: {
-        event: 'SQLITE_CANONICAL_EVENT',
-        kind: event.kind,
-        severity: event.severity,
-        summary: event.summary,
-        host: event.host,
-        method: event.method,
-        path: event.path,
-        status_code: event.status_code,
-        provider: event.provider,
-        model: event.model,
-        session_id: event.session_id,
-        conversation_id: event.conversation_id,
-        adapter_id: event.adapter_id,
-        confidence: event.confidence,
-      },
-    }))
-    .sort((a, b) => a.timestamp - b.timestamp);
+  return [
+    ...materializedAuditEvents(snapshot.audit_events),
+    ...materializedNetworkEvents(snapshot.network_targets),
+    ...materializedSessionEvents(snapshot.sessions),
+    ...materializedTokenEvents(snapshot.token_summary, snapshot.generated_at),
+  ].sort((a, b) => a.timestamp - b.timestamp);
+}
+
+function materializedAuditEvents(rows?: SnapshotAuditEvent[]): Event[] {
+  if (!Array.isArray(rows)) return [];
+  return rows
+    .filter(row => typeof row.timestamp_ms === 'number')
+    .map(row => {
+      const details = isRecord(row.details) ? row.details : {};
+      const eventName = auditEventName(row);
+      const target = row.target ?? undefined;
+      return {
+        id: row.id,
+        timestamp: row.timestamp_ms,
+        source: row.audit_type,
+        pid: row.pid ?? 0,
+        comm: row.comm ?? row.subject ?? '',
+        data: {
+          ...details,
+          event: eventName,
+          audit_type: row.audit_type,
+          action: row.action,
+          target,
+          status: row.status,
+          summary: row.summary,
+          subject: row.subject,
+          filename: row.audit_type === 'process' ? target : details.filename,
+          filepath: row.audit_type === 'file' ? target : details.filepath,
+          path: row.audit_type === 'file' ? target : details.path,
+        },
+      };
+    });
+}
+
+function materializedNetworkEvents(rows?: SnapshotNetworkTarget[]): Event[] {
+  if (!Array.isArray(rows)) return [];
+  return rows.map((row, index) => ({
+    id: `network-${row.pid ?? 0}-${row.host}-${row.path ?? ''}-${index}`,
+    timestamp: row.last_timestamp_ms ?? row.first_timestamp_ms ?? 0,
+    source: 'network',
+    pid: row.pid ?? 0,
+    comm: row.comm ?? '',
+    data: {
+      event: 'NETWORK_TARGET',
+      host: row.host,
+      path: row.path,
+      count: row.count ?? 0,
+      error_count: row.error_count ?? 0,
+      first_timestamp_ms: row.first_timestamp_ms,
+      last_timestamp_ms: row.last_timestamp_ms,
+    },
+  }));
+}
+
+function materializedSessionEvents(rows?: SnapshotSession[]): Event[] {
+  if (!Array.isArray(rows)) return [];
+  return rows.map(row => ({
+    id: `session-${row.id}`,
+    timestamp: row.end_timestamp_ms ?? row.start_timestamp_ms,
+    source: 'session',
+    pid: row.pid ?? 0,
+    comm: row.comm ?? row.agent_name ?? row.agent_type,
+    data: {
+      ...(isRecord(row.attributes) ? row.attributes : {}),
+      event: 'SESSION',
+      session_id: row.id,
+      agent_type: row.agent_type,
+      agent_name: row.agent_name,
+      status: row.status,
+      model: row.model,
+      input_tokens: row.input_tokens ?? 0,
+      output_tokens: row.output_tokens ?? 0,
+      total_tokens: row.total_tokens ?? 0,
+    },
+  }));
+}
+
+function materializedTokenEvents(rows?: SnapshotTokenSummary[], generatedAt?: string): Event[] {
+  if (!Array.isArray(rows)) return [];
+  const timestamp = generatedAt ? Date.parse(generatedAt) || 0 : 0;
+  return rows.map(row => ({
+    id: `tokens-${row.group}`,
+    timestamp,
+    source: 'token',
+    pid: 0,
+    comm: row.group,
+    data: {
+      event: 'TOKEN_SUMMARY',
+      model: row.group,
+      input_tokens: row.input_tokens ?? 0,
+      output_tokens: row.output_tokens ?? 0,
+      total_tokens: row.total_tokens ?? 0,
+      calls: row.calls ?? 0,
+    },
+  }));
+}
+
+function auditEventName(row: SnapshotAuditEvent): string {
+  if (row.audit_type === 'process') {
+    if (row.action === 'exec') return 'EXEC';
+    if (row.action === 'exit') return 'EXIT';
+    return (row.action ?? 'PROCESS').toUpperCase();
+  }
+  if (row.audit_type === 'file') return 'FILE_WRITE';
+  if (row.audit_type === 'llm') return 'LLM_CALL';
+  return row.audit_type.toUpperCase();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function parseSnapshotContent(content: string): Event[] | null {
@@ -88,13 +253,21 @@ function parseSnapshotContent(content: string): Event[] | null {
 
   try {
     const parsed = JSON.parse(trimmed) as AgentSightSnapshot;
-    if (!parsed || parsed.schema_version !== 1 || !Array.isArray(parsed.events)) {
+    if (!parsed || parsed.schema_version !== 1 || !isSnapshotPayload(parsed)) {
       return null;
     }
     return snapshotToEvents(parsed);
   } catch {
     return null;
   }
+}
+
+function isSnapshotPayload(snapshot: AgentSightSnapshot): boolean {
+  return Array.isArray(snapshot.events)
+    || Array.isArray(snapshot.audit_events)
+    || Array.isArray(snapshot.network_targets)
+    || Array.isArray(snapshot.sessions)
+    || Array.isArray(snapshot.token_summary);
 }
 
 export default function Home() {
