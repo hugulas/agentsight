@@ -82,7 +82,7 @@ async fn setup_signal_handler() {
 #[command(
     author,
     version,
-             about = "AgentSight: stat/top/record/report for AI agent runs.\n\n\
+    about = "AgentSight: stat/top/record/report for AI agent runs.\n\n\
              Common flow:\n\
                sudo agentsight stat -- claude\n\
                sudo agentsight record -- claude\n\

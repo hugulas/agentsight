@@ -393,8 +393,7 @@ make -C bpf debug
 ### Key Resources
 
 - [CLAUDE.md](CLAUDE.md) - Project guidelines and architecture
-- [collector/DESIGN.md](collector/DESIGN.md) - Framework design details
-- [docs/why.md](docs/why.md) - Problem analysis and motivation
+- [docs/design/README.md](docs/design/README.md) - archived design notes and research drafts
 
 ## 📄 License
 

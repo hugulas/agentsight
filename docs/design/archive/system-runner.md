@@ -1,5 +1,8 @@
 # System Runner
 
+> Archived design note. This may be stale; prefer the current source code and
+> user-facing docs in the repository root and `docs/usage.md`.
+
 The System Runner is a pure Rust implementation for monitoring CPU and memory usage of processes and the system. Unlike the SSL and Process runners which rely on eBPF programs, the System Runner reads directly from `/proc` filesystem, making it lightweight and requiring no kernel instrumentation.
 
 ## Features

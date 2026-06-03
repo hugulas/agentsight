@@ -39,6 +39,11 @@ Build all components:
 make build
 ```
 
+`make build` rebuilds the frontend and eBPF loaders, then refreshes the
+vendored assets embedded by the Rust binary. The frontend build id is stable for
+the same source inputs, so repeated builds do not create new hashed asset paths
+unless the frontend source or configuration changed.
+
 The built binary is at:
 
 ```text
@@ -52,6 +57,11 @@ make build-frontend  # frontend assets
 make build-bpf       # eBPF programs
 make build-rust      # Rust collector
 ```
+
+`make build-rust` and direct `cargo build` use the existing vendored assets and
+do not refresh them. For packaging outside the Makefile, set
+`AGENTSIGHT_SYNC_VENDOR=1` when building the collector after rebuilding the
+frontend and eBPF loaders.
 
 ## Verify
 

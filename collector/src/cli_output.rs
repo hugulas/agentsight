@@ -375,7 +375,7 @@ pub(crate) fn print_agent_top(top: &AgentTopOutput<'_>) {
     let generated_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
     let db = top.db.map(|db| format!(" · {db}")).unwrap_or_default();
     println!(
-        "AgentSight top - {} sessions   {}   {}{db}   {:.0}s   events: {}   LLM: {}   tokens: {}",
+        "AgentSight top - {} sessions   {}   {}{db}   {:.0}s   events: {}   LLM: {}   session tokens: {}",
         top.rows.len(),
         top.mode,
         generated_at,

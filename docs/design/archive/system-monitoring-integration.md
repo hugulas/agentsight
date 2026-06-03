@@ -1,5 +1,8 @@
 # System Monitoring Integration
 
+> Archived design note. This may be stale; prefer the current source code and
+> user-facing docs in the repository root and `docs/usage.md`.
+
 ## Overview
 
 AgentSight now includes automatic CPU and memory monitoring integrated into the `record` and `trace` commands. This provides comprehensive observability of AI agent resource consumption alongside network and process activity.
@@ -296,6 +299,6 @@ Planned improvements:
 
 ## See Also
 
-- [System Runner Documentation](SYSTEM_RUNNER.md)
+- [System Runner Documentation](system-runner.md)
 - [Framework Design](DESIGN.md)
 - [Quick Start Guide](../README.md)

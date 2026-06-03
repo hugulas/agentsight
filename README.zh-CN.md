@@ -331,8 +331,7 @@ make -C bpf debug
 ### 关键资源
 
 - [CLAUDE.md](CLAUDE.md) - 项目指南和架构
-- [collector/DESIGN.md](collector/DESIGN.md) - 框架设计详情
-- [docs/why.md](docs/why.md) - 问题分析和动机（[中文版](docs/why.zh-CN.md)）
+- [docs/design/README.md](docs/design/README.md) - 归档的设计笔记和研究草稿
 
 ## 许可证
 

@@ -1,5 +1,9 @@
 # Agent CLI usage with AgentSight
 
+> Archived smoke-test note from 2026-06-02. This may be stale; prefer the
+> current source code and user-facing docs in the repository root and
+> `docs/usage.md`.
+
 This document records the agent commands that were tested on this machine on
 2026-06-02. It is intentionally conservative: if a command only passed a syntax
 or startup smoke, it is marked that way.

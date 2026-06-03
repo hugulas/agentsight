@@ -1,5 +1,8 @@
 # AI Agent Observability Framework - MVP Design
 
+> Archived design note. This may be stale; prefer the current source code and
+> user-facing docs in the repository root and `docs/usage.md`.
+
 ## Overview
 
 A minimal CLI-driven observability framework using a fluent builder pattern where runners can have analyzers attached directly. Includes a RunnerOrchestrator for managing multiple runners simultaneously and server components for frontend integration.
