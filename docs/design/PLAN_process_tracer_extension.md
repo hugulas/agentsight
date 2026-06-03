@@ -75,13 +75,28 @@ Unit tests:
 make -C bpf test
 ```
 
-Focused runtime smoke tests should cover:
+`make test` runs header/unit tests and then automatically runs the process
+runtime suite when the current user is root or `sudo -n` is available. If root
+is unavailable, runtime tests are skipped explicitly instead of prompting for a
+password.
+
+Runtime coverage includes:
 
 - default `./process -m 0`
+- JSON parsing and escaping for quoted commands
+- `-p` target process tree attribution
+- `--session` process-session attribution
+- `-m 2` without selectors does not fall back to global tracing
 - `--trace-fs` SUMMARY events
 - `--trace-net` SUMMARY events
 - `--trace-resources` RESOURCE_SAMPLE events
 - JSON parsing of commands and paths containing quotes and backslashes
+
+Full root integration tests:
+
+```text
+make -C bpf integration-test
+```
 
 Collector regression tests:
 

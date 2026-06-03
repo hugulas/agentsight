@@ -77,12 +77,47 @@ pub(crate) struct AgentTopOutput<'a> {
 pub(crate) struct SessionSummary {
     pub(crate) source: String,
     pub(crate) duration_s: f64,
+    pub(crate) first_llm_after_ms: Option<u64>,
+    pub(crate) first_tool_after_ms: Option<u64>,
+    pub(crate) prompt_chars: SummaryStats,
+    pub(crate) llm_latency_ms: SummaryStats,
     pub(crate) models: Vec<(String, i64, i64, i64, i64)>,
     pub(crate) processes: BTreeMap<String, usize>,
     pub(crate) process_exits: BTreeMap<String, usize>,
     pub(crate) tool_calls: BTreeMap<String, usize>,
+    pub(crate) tool_duration_ms: SummaryStats,
     pub(crate) files: Vec<String>,
+    pub(crate) file_access: FileAccessSummary,
+    pub(crate) network_events: usize,
     pub(crate) endpoints: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SummaryStats {
+    pub(crate) count: usize,
+    pub(crate) total: u64,
+    pub(crate) max: u64,
+}
+
+impl SummaryStats {
+    pub(crate) fn add(&mut self, value: u64) {
+        self.count += 1;
+        self.total += value;
+        self.max = self.max.max(value);
+    }
+
+    fn avg(&self) -> Option<u64> {
+        (self.count > 0).then(|| self.total / self.count as u64)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct FileAccessSummary {
+    pub(crate) events: usize,
+    pub(crate) first_after_ms: Option<u64>,
+    pub(crate) last_after_ms: Option<u64>,
+    pub(crate) actions: BTreeMap<String, usize>,
+    pub(crate) directories: Vec<(String, usize)>,
 }
 
 pub(crate) fn print_json<T: Serialize>(value: &T) -> Result<(), serde_json::Error> {
@@ -351,6 +386,8 @@ pub(crate) fn print_session_summary(summary: &SessionSummary) {
     }
     println!("\n");
 
+    print_session_timeline(summary);
+
     for (name, inp, out, total, calls) in &summary.models {
         if *inp == 0 && *out == 0 && *total == 0 {
             continue;
@@ -365,24 +402,95 @@ pub(crate) fn print_session_summary(summary: &SessionSummary) {
     print_count_map("processes spawned", &summary.processes);
     print_process_exits(&summary.process_exits);
     print_count_map("tool calls", &summary.tool_calls);
+    if let Some(avg) = summary.tool_duration_ms.avg() {
+        println!(
+            "tool duration: avg {}, max {} ({} completed)",
+            format_ms(avg),
+            format_ms(summary.tool_duration_ms.max),
+            summary.tool_duration_ms.count
+        );
+    } else if !summary.tool_calls.is_empty() {
+        println!("tool duration: not captured");
+    }
 
-    if !summary.files.is_empty() {
+    if summary.file_access.events > 0 {
+        let file_window = match (
+            summary.file_access.first_after_ms,
+            summary.file_access.last_after_ms,
+        ) {
+            (Some(first), Some(last)) if last > first => {
+                format!(" · +{}..+{}", format_ms(first), format_ms(last))
+            }
+            (Some(first), _) => format!(" · +{}", format_ms(first)),
+            _ => String::new(),
+        };
+        println!(
+            "{} file events · {} unique files{}",
+            summary.file_access.events,
+            summary.files.len(),
+            file_window
+        );
+        print_count_map("file actions", &summary.file_access.actions);
+        if !summary.file_access.directories.is_empty() {
+            let dirs = summary
+                .file_access
+                .directories
+                .iter()
+                .take(5)
+                .map(|(dir, count)| format!("{}({})", truncate(dir, 64), count))
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!("file dirs: {dirs}");
+        }
         let display: Vec<&str> = summary.files.iter().take(5).map(String::as_str).collect();
         let suffix = if summary.files.len() > 5 {
             format!(", ... (+{} more)", summary.files.len() - 5)
         } else {
             String::new()
         };
+        println!("files accessed: {}{}", display.join(", "), suffix);
+    }
+    if summary.network_events > 0 {
         println!(
-            "{} files accessed: {}{}",
-            summary.files.len(),
-            display.join(", "),
-            suffix
+            "Network: {} events across {} endpoints: {}",
+            summary.network_events,
+            summary.endpoints.len(),
+            summary.endpoints.join(", ")
         );
     }
-    if !summary.endpoints.is_empty() {
-        println!("Network: {}", summary.endpoints.join(", "));
+}
+
+fn print_session_timeline(summary: &SessionSummary) {
+    let has_timeline = summary.first_llm_after_ms.is_some()
+        || summary.first_tool_after_ms.is_some()
+        || summary.prompt_chars.count > 0
+        || summary.llm_latency_ms.count > 0;
+    if !has_timeline {
+        return;
     }
+
+    println!("Timeline");
+    if let Some(ms) = summary.first_llm_after_ms {
+        println!("  first LLM call: +{}", format_ms(ms));
+    }
+    if let Some(ms) = summary.first_tool_after_ms {
+        println!("  first tool call: +{}", format_ms(ms));
+    }
+    if let Some(avg) = summary.llm_latency_ms.avg() {
+        println!(
+            "  LLM latency: avg {}, max {} ({} completed)",
+            format_ms(avg),
+            format_ms(summary.llm_latency_ms.max),
+            summary.llm_latency_ms.count
+        );
+    }
+    if let Some(avg) = summary.prompt_chars.avg() {
+        println!(
+            "  prompt length: avg {} chars, max {} chars ({} captured)",
+            avg, summary.prompt_chars.max, summary.prompt_chars.count
+        );
+    }
+    println!();
 }
 
 pub(crate) fn print_local_audit(source: &str, file: &str, data: &Value) {
@@ -518,6 +626,14 @@ fn print_process_exits(counts: &BTreeMap<String, usize>) {
     );
 }
 
+fn format_ms(ms: u64) -> String {
+    if ms >= 1000 {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    } else {
+        format!("{ms}ms")
+    }
+}
+
 fn print_ranked((title, unit, rows): &TopSection) {
     if rows.is_empty() {
         return;
@@ -562,6 +678,10 @@ fn truncate(s: &str, max: usize) -> String {
 fn prompt_preview(value: &Value, max: usize) -> String {
     let text = extract_prompt_text(value).unwrap_or_else(|| value.to_string());
     truncate(&text.split_whitespace().collect::<Vec<_>>().join(" "), max)
+}
+
+pub(crate) fn prompt_text_chars(value: &Value) -> Option<usize> {
+    extract_prompt_text(value).map(|text| text.chars().count())
 }
 
 fn extract_prompt_text(value: &Value) -> Option<String> {

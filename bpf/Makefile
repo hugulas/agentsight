@@ -110,8 +110,11 @@ help:
 	@echo "Build with AddressSanitizer manually:"
 	@echo "  make ASAN=1 sslsniff"
 
-.PHONY: test
-test: test_process_utils test_process_filter test_process_ext_map_flush test_process_ext_mem_info test_process_ext_types
+.PHONY: test unit-test runtime-test
+test: unit-test
+	@$(MAKE) runtime-test
+
+unit-test: test_process_utils test_process_filter test_process_ext_map_flush test_process_ext_mem_info test_process_ext_types
 	@echo "Running process_utils tests..."
 	@./test_process_utils
 	@echo ""
@@ -126,6 +129,17 @@ test: test_process_utils test_process_filter test_process_ext_map_flush test_pro
 	@echo ""
 	@echo "Running process_ext types tests..."
 	@./test_process_ext_types
+
+runtime-test: process
+	@echo ""
+	@echo "Running process runtime tests..."
+	@if [ "$$(id -u)" -eq 0 ]; then \
+		python3 tests/test_process_runtime.py; \
+	elif sudo -n true >/dev/null 2>&1; then \
+		sudo -n env PATH="$$PATH" python3 tests/test_process_runtime.py; \
+	else \
+		echo "SKIP: process runtime tests require root or cached sudo"; \
+	fi
 
 .PHONY: integration-test
 integration-test: process

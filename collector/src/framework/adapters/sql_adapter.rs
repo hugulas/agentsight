@@ -404,13 +404,38 @@ mod tests {
                 ]
             }),
         );
+        let tool_result_req = Event::new_with_timestamp(
+            5,
+            "http_parser".to_string(),
+            42,
+            "claude".to_string(),
+            json!({
+                "tid": 7,
+                "message_type": "request",
+                "method": "POST",
+                "path": "/v1/messages",
+                "headers": { "host": "api.anthropic.com" },
+                "body": "{\"model\":\"claude-sonnet-4-20250514\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_1\",\"content\":\"ok\"}]}]}"
+            }),
+        );
         store.insert_event(&req, &mut projector).unwrap();
         store.insert_event(&sse, &mut projector).unwrap();
+        store
+            .insert_event(&tool_result_req, &mut projector)
+            .unwrap();
 
         run_sql_adapters(&mut store, "claude-code").unwrap();
         let first_count: i64 = store
             .connection()
             .query_row("SELECT COUNT(*) FROM tool_calls", [], |r| r.get(0))
+            .unwrap();
+        let duration_ms: Option<i64> = store
+            .connection()
+            .query_row(
+                "SELECT duration_ms FROM tool_calls WHERE tool_call_id = 'toolu_1'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         run_sql_adapters(&mut store, "claude-code").unwrap();
         let second_count: i64 = store
@@ -418,6 +443,7 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM tool_calls", [], |r| r.get(0))
             .unwrap();
         assert_eq!(first_count, 1);
+        assert_eq!(duration_ms, Some(3));
         assert_eq!(second_count, first_count);
     }
 

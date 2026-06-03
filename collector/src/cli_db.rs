@@ -2,9 +2,10 @@
 // Copyright (c) 2026 eunomia-bpf org.
 
 use crate::cli_output::{
-    SessionSummary, print_adapter_run, print_adapters, print_audit_rows, print_capture_adapters,
-    print_exported_snapshot, print_json, print_llm_prompts, print_local_audit, print_replay,
-    print_session_summary, print_token_summary,
+    FileAccessSummary, SessionSummary, SummaryStats, print_adapter_run, print_adapters,
+    print_audit_rows, print_capture_adapters, print_exported_snapshot, print_json,
+    print_llm_prompts, print_local_audit, print_replay, print_session_summary, print_token_summary,
+    prompt_text_chars,
 };
 use crate::framework::{
     adapters::{builtin_adapters, run_sql_adapters},
@@ -13,6 +14,7 @@ use crate::framework::{
     storage::{GenericProjector, SnapshotOptions, SqliteStore},
 };
 use clap::Subcommand;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
 #[derive(Subcommand)]
@@ -217,6 +219,27 @@ impl SessionSummary {
             (Some(start), Some(end)) if end > start => (end - start) as f64 / 1000.0,
             _ => 0.0,
         };
+        let llm_rows = store.llm_call_rows(50_000)?;
+        let first_llm_after_ms = s.start_timestamp_ms.and_then(|start| {
+            llm_rows
+                .iter()
+                .map(|row| row.start_timestamp_ms)
+                .min()
+                .and_then(|ts| ts.checked_sub(start))
+        });
+        let mut prompt_chars = SummaryStats::default();
+        let mut llm_latency_ms = SummaryStats::default();
+        for row in &llm_rows {
+            if let Some(chars) = prompt_text_chars(&row.request) {
+                prompt_chars.add(chars as u64);
+            }
+            if let Some(delta) = row
+                .end_timestamp_ms
+                .and_then(|end| end.checked_sub(row.start_timestamp_ms))
+            {
+                llm_latency_ms.add(delta);
+            }
+        }
         let models = snap
             .token_summary
             .iter()
@@ -245,20 +268,66 @@ impl SessionSummary {
                 *process_exits.entry(status).or_default() += 1;
             }
         }
+        let mut seen_files = BTreeSet::new();
         let mut files = Vec::new();
+        let mut file_access = FileAccessSummary::default();
+        let mut file_dirs = BTreeMap::new();
         for row in &snap.audit_events {
-            if row.audit_type == "file" && row.target.as_ref().is_some_and(|t| !files.contains(t)) {
-                files.push(row.target.clone().unwrap());
+            if row.audit_type != "file" {
+                continue;
+            }
+            file_access.events += 1;
+            let action = row.action.as_deref().unwrap_or("observed").to_string();
+            *file_access.actions.entry(action).or_default() += 1;
+            if let Some(delta) = after_start(s.start_timestamp_ms, row.timestamp_ms) {
+                file_access.first_after_ms = Some(
+                    file_access
+                        .first_after_ms
+                        .map_or(delta, |current| current.min(delta)),
+                );
+                file_access.last_after_ms = Some(
+                    file_access
+                        .last_after_ms
+                        .map_or(delta, |current| current.max(delta)),
+                );
+            }
+            if let Some(target) = row.target.as_ref() {
+                if seen_files.insert(target.clone()) {
+                    files.push(target.clone());
+                }
+                *file_dirs.entry(file_directory(target)).or_default() += 1;
             }
         }
-        let endpoints: Vec<String> = snap
-            .events
-            .iter()
-            .filter_map(|e| e.host.clone())
-            .collect::<std::collections::BTreeSet<_>>()
+        file_access.directories = top_counts(file_dirs, 8);
+
+        let mut endpoint_counts = BTreeMap::new();
+        let mut network_events = 0usize;
+        for event in &snap.events {
+            if let Some(host) = event.host.as_ref() {
+                network_events += 1;
+                let endpoint = event
+                    .path
+                    .as_ref()
+                    .filter(|path| !path.is_empty())
+                    .map(|path| format!("{host}{path}"))
+                    .unwrap_or_else(|| host.clone());
+                *endpoint_counts.entry(endpoint).or_default() += 1;
+            }
+        }
+        let endpoints = top_counts(endpoint_counts, 8)
             .into_iter()
+            .map(|(endpoint, count)| format!("{endpoint}({count})"))
             .collect();
+        let first_tool_timestamp_ms: Option<u64> = store
+            .connection_mut()
+            .query_row("SELECT MIN(timestamp_ms) FROM tool_calls", [], |row| {
+                row.get::<_, Option<i64>>(0)
+            })?
+            .map(|v| v as u64);
+        let first_tool_after_ms =
+            first_tool_timestamp_ms.and_then(|ts| after_start(s.start_timestamp_ms, ts));
         let mut tool_calls = BTreeMap::new();
+        let mut tool_duration_ms = SummaryStats::default();
         {
             let mut stmt = store.connection_mut().prepare(
                 "SELECT COALESCE(tool_name, '?'), COUNT(*)
@@ -274,14 +343,30 @@ impl SessionSummary {
                 tool_calls.insert(name, count);
             }
         }
+        {
+            let mut stmt = store
+                .connection_mut()
+                .prepare("SELECT duration_ms FROM tool_calls WHERE duration_ms >= 0")?;
+            let rows = stmt.query_map([], |row| row.get::<_, i64>(0))?;
+            for row in rows {
+                tool_duration_ms.add(row? as u64);
+            }
+        }
         Ok(Self {
             source: "agentsight".into(),
             duration_s,
+            first_llm_after_ms,
+            first_tool_after_ms,
+            prompt_chars,
+            llm_latency_ms,
             models,
             processes,
             process_exits,
             tool_calls,
+            tool_duration_ms,
             files,
+            file_access,
+            network_events,
             endpoints,
         })
     }
@@ -317,14 +402,40 @@ impl SessionSummary {
         Self {
             source: source.into(),
             duration_s,
+            first_llm_after_ms: None,
+            first_tool_after_ms: None,
+            prompt_chars: SummaryStats::default(),
+            llm_latency_ms: SummaryStats::default(),
             models,
             processes: BTreeMap::new(),
             process_exits: BTreeMap::new(),
             tool_calls,
+            tool_duration_ms: SummaryStats::default(),
             files: vec![],
+            file_access: FileAccessSummary::default(),
+            network_events: 0,
             endpoints: vec![],
         }
     }
+}
+
+fn after_start(start_timestamp_ms: Option<u64>, timestamp_ms: u64) -> Option<u64> {
+    start_timestamp_ms.and_then(|start| timestamp_ms.checked_sub(start))
+}
+
+fn top_counts(counts: BTreeMap<String, usize>, limit: usize) -> Vec<(String, usize)> {
+    let mut rows = counts.into_iter().collect::<Vec<_>>();
+    rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    rows.truncate(limit);
+    rows
+}
+
+fn file_directory(path: &str) -> String {
+    std::path::Path::new(path)
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(|parent| parent.to_string_lossy().to_string())
+        .unwrap_or_else(|| ".".to_string())
 }
 
 pub(crate) fn run_db_summary(
@@ -358,8 +469,6 @@ pub(crate) fn run_local_audit(json: bool) -> Result<(), Box<dyn std::error::Erro
 // ---------------------------------------------------------------------------
 // Local agent session reader (reads ~/.claude and ~/.codex JSONL directly)
 // ---------------------------------------------------------------------------
-
-use std::collections::BTreeMap;
 
 fn local_session_dirs() -> Vec<(&'static str, std::path::PathBuf)> {
     let home = dirs::home_dir().unwrap_or_default();
@@ -425,6 +534,106 @@ fn read_latest_local_session() -> Option<(String, String, serde_json::Value)> {
 
 fn json_u64(v: &serde_json::Value, key: &str) -> u64 {
     v.get(key).and_then(|v| v.as_u64()).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn sqlite_summary_reports_timeline_prompt_and_access_scope() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = temp.path().join("summary.db");
+        let mut store = SqliteStore::open(&db).unwrap();
+        let mut projector = GenericProjector::new();
+
+        for event in [
+            Event::new_with_timestamp(
+                1_000,
+                "process".to_string(),
+                42,
+                "claude".to_string(),
+                json!({"event": "EXEC", "filename": "/usr/bin/claude"}),
+            ),
+            Event::new_with_timestamp(
+                1_200,
+                "http_parser".to_string(),
+                42,
+                "claude".to_string(),
+                json!({
+                    "tid": 7,
+                    "message_type": "request",
+                    "method": "POST",
+                    "path": "/v1/messages",
+                    "headers": {"host": "api.anthropic.com"},
+                    "body": "{\"model\":\"claude-sonnet-4\",\"messages\":[{\"role\":\"user\",\"content\":\"hello summary\"}]}"
+                }),
+            ),
+            Event::new_with_timestamp(
+                1_700,
+                "http_parser".to_string(),
+                42,
+                "claude".to_string(),
+                json!({
+                    "tid": 7,
+                    "message_type": "response",
+                    "path": "/v1/messages",
+                    "headers": {"host": "api.anthropic.com"},
+                    "status_code": 200,
+                    "body": "{\"model\":\"claude-sonnet-4\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}"
+                }),
+            ),
+            Event::new_with_timestamp(
+                1_800,
+                "process".to_string(),
+                42,
+                "claude".to_string(),
+                json!({"event": "FILE_WRITE", "path": "/tmp/agentsight-summary/a.txt"}),
+            ),
+            Event::new_with_timestamp(
+                1_900,
+                "process".to_string(),
+                42,
+                "claude".to_string(),
+                json!({"event": "FILE_WRITE", "path": "/tmp/agentsight-summary/sub/b.txt"}),
+            ),
+        ] {
+            store.insert_event(&event, &mut projector).unwrap();
+        }
+
+        store
+            .connection_mut()
+            .execute(
+                "INSERT INTO tool_calls (
+                    id, timestamp_ms, start_timestamp_ms, end_timestamp_ms,
+                    duration_ms, tool_name, adapter_id
+                 ) VALUES ('tool-1', 1500, 1500, 1650, 150, 'Bash', 'claude-code')",
+                [],
+            )
+            .unwrap();
+
+        let summary = SessionSummary::from_sqlite(db.to_str().unwrap()).unwrap();
+        assert_eq!(summary.duration_s, 0.9);
+        assert_eq!(summary.first_llm_after_ms, Some(200));
+        assert_eq!(summary.first_tool_after_ms, Some(500));
+        assert_eq!(summary.prompt_chars.count, 1);
+        assert_eq!(summary.prompt_chars.total, 13);
+        assert_eq!(summary.llm_latency_ms.count, 1);
+        assert_eq!(summary.llm_latency_ms.total, 500);
+        assert_eq!(summary.tool_calls.get("Bash"), Some(&1));
+        assert_eq!(summary.tool_duration_ms.count, 1);
+        assert_eq!(summary.tool_duration_ms.total, 150);
+        assert_eq!(summary.file_access.events, 2);
+        assert_eq!(summary.file_access.actions.get("write"), Some(&2));
+        assert_eq!(summary.files.len(), 2);
+        assert_eq!(summary.network_events, 2);
+        assert!(
+            summary
+                .endpoints
+                .contains(&"api.anthropic.com/v1/messages(2)".to_string())
+        );
+    }
 }
 
 fn parse_local_session(source: &str, content: &str) -> serde_json::Value {

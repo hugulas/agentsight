@@ -237,7 +237,42 @@ impl SqliteStore {
         self.conn.pragma_update(None, "journal_mode", "WAL").ok();
         self.conn.pragma_update(None, "foreign_keys", "ON")?;
         self.conn.execute_batch(SCHEMA)?;
+        self.migrate_schema()?;
         Ok(())
+    }
+
+    fn migrate_schema(&self) -> StorageResult<()> {
+        self.add_column_if_missing("tool_calls", "start_timestamp_ms", "INTEGER")?;
+        self.add_column_if_missing("tool_calls", "end_timestamp_ms", "INTEGER")?;
+        self.add_column_if_missing("tool_calls", "duration_ms", "INTEGER")?;
+        Ok(())
+    }
+
+    fn add_column_if_missing(
+        &self,
+        table: &str,
+        column: &str,
+        definition: &str,
+    ) -> StorageResult<()> {
+        if self.column_exists(table, column)? {
+            return Ok(());
+        }
+        self.conn.execute(
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+            [],
+        )?;
+        Ok(())
+    }
+
+    fn column_exists(&self, table: &str, column: &str) -> StorageResult<bool> {
+        let mut stmt = self.conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        for row in rows {
+            if row? == column {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     pub fn insert_event(
@@ -1400,6 +1435,9 @@ CREATE TABLE IF NOT EXISTS tool_calls (
   session_id TEXT,
   conversation_id TEXT,
   timestamp_ms INTEGER NOT NULL,
+  start_timestamp_ms INTEGER,
+  end_timestamp_ms INTEGER,
+  duration_ms INTEGER,
   tool_name TEXT,
   tool_call_id TEXT,
   status TEXT,
@@ -1519,6 +1557,39 @@ mod tests {
             )
             .unwrap();
         assert_eq!(target, "/tmp/package-lock.json");
+    }
+
+    #[test]
+    fn migrates_tool_call_duration_columns() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = temp.path().join("old.db");
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE tool_calls (
+                  id TEXT PRIMARY KEY,
+                  session_id TEXT,
+                  conversation_id TEXT,
+                  timestamp_ms INTEGER NOT NULL,
+                  tool_name TEXT,
+                  tool_call_id TEXT,
+                  status TEXT,
+                  input_json TEXT,
+                  output_json TEXT,
+                  related_pid INTEGER,
+                  related_event_id TEXT,
+                  adapter_id TEXT NOT NULL,
+                  confidence REAL
+                );",
+            )
+            .unwrap();
+        }
+
+        let store = SqliteStore::open(&db).unwrap();
+        for column in ["start_timestamp_ms", "end_timestamp_ms", "duration_ms"] {
+            let exists = store.column_exists("tool_calls", column).unwrap();
+            assert!(exists, "missing migrated column {column}");
+        }
     }
 
     #[test]
