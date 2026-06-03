@@ -1,7 +1,29 @@
 [package]
 name = "agentsight"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
+rust-version = "1.87"
+description = "eBPF-based observability for AI agent sessions, prompts, process trees, files, network activity, and token usage."
+license = "MIT"
+repository = "https://github.com/eunomia-bpf/agentsight"
+homepage = "https://github.com/eunomia-bpf/agentsight"
+readme = "README.md"
+keywords = ["ebpf", "ai-agent", "observability", "llm", "linux"]
+categories = ["command-line-utilities", "development-tools::debugging", "os::linux-apis"]
+build = "build.rs"
+include = [
+    "Cargo.toml",
+    "Cargo.lock",
+    "README.md",
+    "build.rs",
+    "src/**",
+    "tests/**",
+    "adapters/**",
+    "vendor/bpf/process",
+    "vendor/bpf/sslsniff",
+    "vendor/bpf/stdiocap",
+    "vendor/frontend/dist/**",
+]
 
 [dependencies]
 async-stream = "0.3"

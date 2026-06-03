@@ -26,18 +26,19 @@ closed-source CLI. **✨ Zero Instrumentation Required**
 ## Quick Start
 
 ```bash
-# Install
-wget https://github.com/eunomia-bpf/agentsight/releases/latest/download/agentsight && chmod +x agentsight
+# Install from crates.io, or download the prebuilt Linux binary from GitHub.
+cargo install agentsight
+# wget https://github.com/eunomia-bpf/agentsight/releases/latest/download/agentsight && chmod +x agentsight
 # Launch your agent with monitoring. AgentSight may prompt for sudo
 # to load eBPF probes; the agent itself still runs as your user.
 # Launch your agent, record the run, and print perf-style counters.
-./agentsight stat -- claude
+agentsight stat -- claude
 # Re-open the latest session report after the agent exits.
-./agentsight report
+agentsight report
 # Watch live ranked agent sessions.
-./agentsight top
+agentsight top
 # Or attach to an already-running agent by process name
-sudo ./agentsight record -c claude
+sudo agentsight record -c claude
 ```
 
 When the launched agent exits, `stat` prints counters; `report` opens the saved run summary later. For the blog example:

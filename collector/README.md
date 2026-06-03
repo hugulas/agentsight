@@ -32,9 +32,8 @@ eBPF Programs → JSON Events → Runners → Analyzer Chains → Output
 ### Installation
 
 ```bash
-# Install dependencies
-sudo apt-get update
-sudo apt-get install -y clang llvm libelf-dev
+# Install the packaged CLI
+cargo install agentsight
 
 # Clone and build
 git clone https://github.com/eunomia-bpf/agentsight.git --recursive

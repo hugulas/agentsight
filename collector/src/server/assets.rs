@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 #[derive(RustEmbed)]
-#[folder = "../frontend/dist/"]
+#[folder = "vendor/frontend/dist/"]
 pub struct FrontendDist;
 
 pub struct FrontendAssets {
