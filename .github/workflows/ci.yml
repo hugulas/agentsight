@@ -187,6 +187,8 @@ jobs:
           TAG="v${VERSION}"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "::notice::GitHub release ${TAG} already exists; trying next patch version."
+          elif git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::notice::Git tag ${TAG} already exists; trying next patch version."
           elif curl -fsS "https://crates.io/api/v1/crates/agentsight/${VERSION}" >/dev/null 2>&1; then
             echo "::notice::crates.io agentsight ${VERSION} already exists; trying next patch version."
           else
@@ -220,6 +222,36 @@ jobs:
     - name: Build package
       run: make build
 
+    - name: Commit release snapshot
+      id: commit_release
+      env:
+        VERSION: ${{ steps.set_version.outputs.version }}
+      run: |
+        set -euo pipefail
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+
+        # build.rs vendors generated BPF/frontend assets into collector/vendor.
+        # Commit the full release snapshot before tagging or publishing so the
+        # GitHub release, crates.io package, and master source agree.
+        git add collector/Cargo.toml collector/Cargo.lock collector/vendor
+        if git diff --cached --quiet; then
+          echo "Release snapshot already matches ${VERSION}; no commit needed."
+        else
+          git commit -m "chore: release agentsight ${VERSION} [skip ci]"
+          git push origin "HEAD:${GITHUB_REF#refs/heads/}"
+        fi
+
+        if [ -n "$(git status --porcelain --untracked-files=all -- collector)" ]; then
+          echo "::error::collector has uncommitted files after release snapshot commit."
+          git status --short --untracked-files=all -- collector
+          exit 1
+        fi
+
+        PUBLISH_SHA="$(git rev-parse HEAD)"
+        echo "publish_sha=${PUBLISH_SHA}" >> "$GITHUB_OUTPUT"
+        echo "Release source commit: ${PUBLISH_SHA}"
+
     - name: Verify Cargo package version
       run: |
         VERSION="${{ steps.set_version.outputs.version }}"
@@ -228,14 +260,23 @@ jobs:
         grep "^version" collector/Cargo.toml
         grep -q "^version = \"$VERSION_NO_V\"" collector/Cargo.toml
 
-    - name: Rebuild collector
+    - name: Rebuild collector from release commit
       run: |
         make build
+
+    - name: Verify release snapshot is stable
+      run: |
+        set -euo pipefail
+        if ! git diff --quiet -- collector/Cargo.toml collector/Cargo.lock collector/vendor; then
+          echo "::error::release build changed committed package inputs."
+          git diff --stat -- collector/Cargo.toml collector/Cargo.lock collector/vendor
+          exit 1
+        fi
 
     - name: Verify Cargo package
       run: |
         cd collector
-        cargo package --allow-dirty
+        cargo package
 
     - name: Publish Release
       uses: softprops/action-gh-release@v2
@@ -244,6 +285,7 @@ jobs:
           collector/target/release/agentsight
         prerelease: false
         tag_name: ${{ steps.set_version.outputs.tag }}
+        target_commitish: ${{ steps.commit_release.outputs.publish_sha }}
         generate_release_notes: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -284,19 +326,4 @@ jobs:
         fi
 
         cd collector
-        cargo publish --allow-dirty
-
-    - name: Commit published version
-      env:
-        VERSION: ${{ steps.set_version.outputs.version }}
-      run: |
-        set -euo pipefail
-        git config user.name "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
-        git add collector/Cargo.toml collector/Cargo.lock
-        if git diff --cached --quiet; then
-          echo "Version files already match ${VERSION}; no commit needed."
-        else
-          git commit -m "chore: bump agentsight to ${VERSION} [skip ci]"
-          git push origin "HEAD:${GITHUB_REF#refs/heads/}"
-        fi
+        cargo publish
