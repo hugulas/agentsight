@@ -210,7 +210,7 @@ echo 50000 > /sys/fs/cgroup/cpu/myapp/cpu.cfs_quota_us
 ### Combined Monitoring
 ```bash
 # Start AgentSight
-sudo ./agentsight trace --ssl --process --comm node --server &
+sudo ./agentsight debug trace --ssl true --process true --comm node --server &
 
 # Monitor resources alongside
 watch -n 2 'echo "=== AgentSight Process Resources ==="; \

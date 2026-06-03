@@ -35,8 +35,10 @@ sudo agentsight top
   <p><em>Live sessions ranked by model, session tokens, health, process family, tool calls, file activity, and network activity</em></p>
 </div>
 
-If you downloaded the binary into the current directory, run `./agentsight top`.
-`top` auto-loads eBPF probes, discovers local agents, and connnect system activity to Agent behavior in real time. See the [Usage](#usage) section for more examples and details.
+If you downloaded the binary into the current directory, run `sudo ./agentsight top`.
+`top` loads eBPF probes, discovers local agents, and connects system activity to
+agent behavior in real time. See the [Usage](#usage) section for more examples
+and details.
 
 ## 🚀 Why AgentSight?
 
@@ -76,7 +78,7 @@ For source builds, see [docs/build.md](docs/build.md).
 #### Cargo or Release Binary
 
 For local use, install with `cargo install agentsight` or download the latest
-release binary, then start with `agentsight top`. Use the examples below when
+release binary, then start with `sudo agentsight top`. Use the examples below when
 you want to record a specific command or inspect saved sessions.
 
 #### Docker
@@ -92,10 +94,10 @@ Build requirements and source build commands live in [docs/build.md](docs/build.
 Every `stat -- <command>` or `record` session is automatically saved to SQLite. Start with the perf-style commands, then use `agentsight db` for structured queries:
 
 ```bash
-agentsight stat                       # counters for the latest session
-agentsight top                        # live ranked view of current agent sessions
+agentsight stat                       # counters for the latest saved session
+sudo agentsight top                   # live ranked view of current agent sessions
 agentsight top --db run.db --once     # ranked view of a saved session
-agentsight record -- claude           # record a command
+sudo agentsight record -- claude      # record a command
 agentsight report                     # high-level run summary
 agentsight list                       # all recorded sessions
 agentsight prompts --json             # full LLM request/response JSON
@@ -132,7 +134,9 @@ During a session, visit [http://127.0.0.1:7395](http://127.0.0.1:7395) for live 
 
 ### Agent Discovery and Adapters
 
-> **Privileges:** eBPF probes need root. AgentSight auto-elevates them via `sudo` (you may be prompted once). Your agent always runs as your normal user. If you prefer explicit sudo: `sudo -E ./agentsight record -- claude` — the child is still dropped to your user.
+> **Privileges:** eBPF probes need root. Use `sudo` for live capture commands.
+> AgentSight can auto-elevate if you forget, but that is a fallback. Your agent
+> still runs as your normal user.
 
 **Discover what agents are installed locally:**
 
@@ -143,9 +147,9 @@ During a session, visit [http://127.0.0.1:7395](http://127.0.0.1:7395) for live 
 **Attach to a running agent with `record`:**
 
 ```bash
-./agentsight record -c claude
-./agentsight record -c python
-./agentsight record -c node --binary-path docker://openclaw
+sudo ./agentsight record -c claude
+sudo ./agentsight record -c python
+sudo ./agentsight record -c node --binary-path docker://openclaw
 ```
 
 Built-in SQL adapters cover Anthropic, Claude Code, Gemini CLI, and OpenClaw sessions. Use `--no-adapters` to disable, or `agentsight db adapters list --json` to inspect.
@@ -159,12 +163,12 @@ after `record --`; AgentSight handles everything else:
 
 ```bash
 # Launch and trace Claude Code — no --binary-path or --comm needed
-./agentsight record -- claude
+sudo ./agentsight record -- claude
 
 # Works for any agent: pass the command exactly as you'd normally run it
-./agentsight record -- claude -p "review my last commit"
-./agentsight record -- python my_agent.py
-./agentsight record -- node ./cli.js
+sudo ./agentsight record -- claude -p "review my last commit"
+sudo ./agentsight record -- python my_agent.py
+sudo ./agentsight record -- node ./cli.js
 ```
 
 What `record -- <command>` does automatically:
@@ -181,7 +185,7 @@ What `record -- <command>` does automatically:
 
 > **`sudo` note**: under `sudo`, `record` still finds *your* user-local installs
 > (it reads `$SUDO_USER`'s home for `~/.local/bin`, `~/bin`, and `~/.nvm`), so
-> `./agentsight record -- claude` traces the claude in your home directory,
+> `sudo ./agentsight record -- claude` traces the claude in your home directory,
 > not a different one on root's `$PATH`.
 
 Useful flags: `--binary-path <path>` to override auto-discovery, `--no-server`
@@ -198,11 +202,11 @@ matching when `--binary-path` is provided:
 CLAUDE_BIN=~/.local/share/claude/versions/$(claude --version | head -1)
 
 # Record all Claude activity with web UI
-./agentsight record -c claude --binary-path "$CLAUDE_BIN"
+sudo ./agentsight record -c claude --binary-path "$CLAUDE_BIN"
 # Open http://127.0.0.1:7395 to view timeline
 
 # Advanced: full trace with custom filters
-./agentsight debug trace --ssl true --process true --comm claude \
+sudo ./agentsight debug trace --ssl true --process true --comm claude \
   --binary-path "$CLAUDE_BIN" --server true --server-port 8080
 ```
 
@@ -220,10 +224,10 @@ This captures:
 
 ```bash
 # Monitor aider, open-interpreter, or any Python-based AI tool
-./agentsight record -c "python"
+sudo ./agentsight record -c "python"
 
 # Custom port and log file
-./agentsight record -c "python" --server-port 8080 --log-file /tmp/agent.log
+sudo ./agentsight record -c "python" --server-port 8080 --log-file /tmp/agent.log
 ```
 
 #### Monitoring Node.js AI Tools (Gemini CLI, etc.)
@@ -236,7 +240,7 @@ The easiest way is `record -- <command>`, which discovers the `node` binary auto
 
 ```bash
 # Gemini CLI runs on Node — record finds the right binary and traces it
-./agentsight record -- gemini
+sudo ./agentsight record -- gemini
 ```
 
 With `record`, AgentSight now auto-discovers the Node binary from `-c node`
@@ -245,10 +249,10 @@ system library), so this just works without `--binary-path`:
 
 ```bash
 # Monitor Gemini CLI or other Node.js AI tools — binary auto-discovered
-./agentsight record -c node
+sudo ./agentsight record -c node
 
 # Pin the binary explicitly if auto-discovery picks the wrong Node install
-./agentsight record -c node --binary-path ~/.nvm/versions/node/v20.0.0/bin/node
+sudo ./agentsight record -c node --binary-path ~/.nvm/versions/node/v20.0.0/bin/node
 ```
 
 > **Behind an HTTP/HTTPS proxy?** Traffic is still TLS-encrypted inside the
@@ -263,10 +267,10 @@ process tree and attaches sslsniff to the right binary automatically:
 
 ```bash
 # OpenClaw is a Node.js agent that runs in a container — works out of the box
-./agentsight record -c node --binary-path docker://openclaw
+sudo ./agentsight record -c node --binary-path docker://openclaw
 
 # Accepts a container name or ID; supported by record / trace / ssl
-./agentsight debug trace --binary-path docker://openclaw --server
+sudo ./agentsight debug trace --binary-path docker://openclaw --server
 ```
 
 `docker inspect` reports the container's *init* process (often `tini`), which
@@ -278,10 +282,10 @@ first process whose binary actually embeds SSL (the `node` process). See
 
 ```bash
 # Combined SSL and process monitoring with web interface
-./agentsight debug trace --ssl true --process true --server true
+sudo ./agentsight debug trace --ssl true --process true --server true
 
 # Custom port and log file
-./agentsight record -c "python" --server-port 8080 --log-file /tmp/agent.log
+sudo ./agentsight record -c "python" --server-port 8080 --log-file /tmp/agent.log
 ```
 
 #### Export to OpenTelemetry (GenAI semantic conventions)
@@ -293,10 +297,10 @@ Collector and on to Jaeger, Grafana Tempo, Datadog, Honeycomb, etc.
 
 ```bash
 # Export gen_ai.* spans to a collector (defaults to http://localhost:4318)
-./agentsight debug trace --otel --otel-endpoint http://localhost:4318
+sudo ./agentsight debug trace --otel --otel-endpoint http://localhost:4318
 
 # Include prompt/completion content (opt-in; off by default for privacy)
-./agentsight debug trace --otel --otel-capture-content
+sudo ./agentsight debug trace --otel --otel-capture-content
 ```
 
 Each LLM request/response pair becomes a `chat {model}` span with

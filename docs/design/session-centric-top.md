@@ -26,7 +26,7 @@ off that session.
 Default behavior:
 
 ```bash
-agentsight top
+sudo agentsight top
 ```
 
 should:
@@ -247,7 +247,7 @@ runner lifecycle changes:
 After Stage 1:
 
 ```bash
-agentsight top --once
+sudo agentsight top --once
 ```
 
 should show a session-first table when local Claude/Codex sessions exist, even

@@ -158,7 +158,7 @@ When monitoring AI agents with AgentSight, you can track memory usage alongside 
 
 ```bash
 # Start AgentSight monitoring
-sudo ./agentsight trace --ssl --process --comm node &
+sudo ./agentsight debug trace --ssl true --process true --comm node &
 
 # In another terminal, monitor memory
 while true; do

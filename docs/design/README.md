@@ -1,0 +1,17 @@
+# Design Notes
+
+This directory contains design notes, research drafts, historical planning
+documents, and exploratory UX/product writeups. These documents may be stale or
+partially superseded by the current implementation.
+
+For current user-facing usage, prefer:
+
+- [README.md](../../README.md)
+- [docs/usage.md](../usage.md)
+- [docs/build.md](../build.md)
+- [docs/docker.md](../docker.md)
+- [docs/otel.md](../otel.md)
+
+When a design note conflicts with the current CLI or source code, treat the
+source code and the user-facing docs above as authoritative. Update or archive
+design notes instead of copying old commands back into product docs.

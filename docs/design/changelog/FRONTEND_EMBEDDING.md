@@ -307,7 +307,7 @@ Commands::Serve { port, host, collect } => {
         tokio::spawn(async move {
             // Start SSL monitoring and forward events
             let mut ssl_runner = SslRunner::from_binary_extractor(binary_extractor.get_sslsniff_path())
-                .add_analyzer(Box::new(OutputAnalyzer::new()));
+                .add_analyzer(Box::new(FileLogger::new("ssl.log").unwrap()));
             
             if let Ok(mut stream) = ssl_runner.run().await {
                 while let Some(event) = stream.next().await {

@@ -147,7 +147,7 @@ cargo run system --pid 1234 --no-children
 
 ```rust
 use agentsight::framework::runners::SystemRunner;
-use agentsight::framework::analyzers::{OutputAnalyzer, FileLogger};
+use agentsight::framework::analyzers::FileLogger;
 use futures::StreamExt;
 
 #[tokio::main]
@@ -158,7 +158,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .include_children(true)
         .cpu_threshold(80.0)
         .memory_threshold(500)
-        .add_analyzer(Box::new(OutputAnalyzer::new()))
         .add_analyzer(Box::new(FileLogger::new("system.log")?));
 
     let mut stream = runner.run().await?;

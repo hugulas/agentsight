@@ -43,8 +43,8 @@ This monitors:
 Enable system monitoring in trace mode:
 
 ```bash
-sudo ./agentsight trace \
-  --ssl --process --system \
+sudo ./agentsight debug trace \
+  --ssl true --process true --system \
   --comm python \
   --system-interval 1 \
   --output monitoring.log
@@ -230,8 +230,8 @@ cat agent_metrics.log | jq -r 'select(.source == "system") |
 
 ```bash
 # Monitor all three dimensions
-sudo ./agentsight trace \
-  --ssl --process --system \
+sudo ./agentsight debug trace \
+  --ssl true --process true --system \
   --comm python \
   --system-interval 1 \
   --server \

@@ -82,15 +82,16 @@ async fn setup_signal_handler() {
 #[command(
     author,
     version,
-    about = "AgentSight: stat/top/record/report for AI agent runs.\n\n\
+             about = "AgentSight: stat/top/record/report for AI agent runs.\n\n\
              Common flow:\n\
-               agentsight stat -- claude\n\
-               agentsight record -- claude\n\
-               agentsight top\n\
+               sudo agentsight stat -- claude\n\
+               sudo agentsight record -- claude\n\
+               sudo agentsight top\n\
                agentsight report\n\
                agentsight prompts --json\n\n\
-             eBPF probes require root; AgentSight auto-elevates them via sudo\n\
-             while your agent runs as your normal user."
+             eBPF probes require root. Use sudo for live capture commands;\n\
+             AgentSight can auto-elevate if you forget, while your agent still\n\
+             runs as your normal user."
 )]
 struct Cli {
     /// Web UI bind address when a command starts a server.
@@ -103,7 +104,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Print counters for a recorded session, or run a command and print counters when it exits.
-    /// Examples: agentsight stat --db run.db     (or)  agentsight stat -- claude
+    /// Examples: agentsight stat --db run.db     (or)  sudo agentsight stat -- claude
     Stat {
         /// SQLite database path (defaults to latest session when no command is passed)
         #[arg(long)]
@@ -173,7 +174,7 @@ enum Commands {
         plain: bool,
     },
     /// Record a command, or attach to an already-running agent by command name or PID.
-    /// Examples: agentsight record -- claude     (or)  agentsight record -c claude
+    /// Examples: sudo agentsight record -- claude     (or)  sudo agentsight record -c claude
     Record {
         /// Process command filter, e.g. claude, codex, node, python
         #[arg(short = 'c', long, conflicts_with = "pid")]

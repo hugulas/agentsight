@@ -44,106 +44,109 @@ cargo build --release
 ### Basic Usage
 
 ```bash
+# Live agent session view
+sudo cargo run -- top
+
+# Launch and record an agent command
+sudo cargo run -- record -- python my_agent.py
+
 # SSL traffic monitoring with HTTP parsing
-cargo run ssl --http-parser
+sudo cargo run -- debug ssl --http-parser
 
 # Process lifecycle monitoring
-cargo run process
+sudo cargo run -- debug process
 
 # Stdio payload monitoring for a local MCP server or CLI child process
-sudo cargo run stdio -- --pid 1234
+sudo cargo run -- debug stdio --pid 1234
 
-# Combined agent monitoring
-cargo run agent -- --comm python --pid 1234
-
-# Web interface with embedded frontend
-cargo run server
+# Combined debug monitoring with the web UI
+sudo cargo run -- debug trace --server -c python
 ```
 
 ## Commands
 
-### SSL Monitoring
+### Debug SSL Monitoring
 
 Monitor SSL/TLS traffic with advanced processing capabilities:
 
 ```bash
 # Basic SSL monitoring
-cargo run ssl
+sudo cargo run -- debug ssl
 
 # Enable Server-Sent Events processing
-cargo run ssl --sse-merge
+sudo cargo run -- debug ssl --sse-merge
 
 # Enable HTTP parsing with raw data
-cargo run ssl --http-parser --http-raw-data
+sudo cargo run -- debug ssl --http-parser --http-raw-data
 
 # Apply filters to reduce noise
-cargo run ssl --http-parser --http-filter "GET /health" --ssl-filter "handshake"
+sudo cargo run -- debug ssl --http-parser --http-filter "GET /health" --ssl-filter "handshake"
 
 # Pass arguments to underlying eBPF program
-cargo run ssl -- --port 443 --comm python
+sudo cargo run -- debug ssl -- --port 443 --comm python
 ```
 
-### Process Monitoring
+### Debug Process Monitoring
 
 Track process lifecycle events:
 
 ```bash
 # Basic process monitoring
-cargo run process
+sudo cargo run -- debug process
 
 # Filter by process name
-cargo run process -- --comm python
+sudo cargo run -- debug process -- --comm python
 
 # Filter by PID
-cargo run process -- --pid 1234
+sudo cargo run -- debug process -- --pid 1234
 
 # Quiet mode (no console output)
-cargo run process --quiet
+sudo cargo run -- debug process --quiet
 ```
 
-### Stdio Monitoring
+### Debug Stdio Monitoring
 
 Capture plaintext stdin/stdout/stderr payloads from a target process:
 
 ```bash
 # Capture stdio payloads from one PID
-sudo cargo run stdio -- --pid 1234
+sudo cargo run -- debug stdio --pid 1234
 
 # Filter by UID or comm
-sudo cargo run stdio -- --pid 1234 --uid 1000 --comm python3
+sudo cargo run -- debug stdio --pid 1234 --uid 1000 --comm python3
 
 # Capture all file descriptors instead of only 0/1/2
-sudo cargo run stdio -- --pid 1234 --all-fds
+sudo cargo run -- debug stdio --pid 1234 --all-fds
 ```
 
-### Agent Monitoring (Combined)
+### Debug Trace Monitoring
 
 Comprehensive monitoring with both SSL and process events:
 
 ```bash
-# Full agent monitoring
-cargo run agent
+# Full debug trace monitoring
+sudo cargo run -- debug trace
 
 # Filter by process command
-cargo run agent --comm python
+sudo cargo run -- debug trace -c python
 
 # SSL-only monitoring
-cargo run agent --process false
+sudo cargo run -- debug trace --process false
 
 # Process-only monitoring
-cargo run agent --ssl false
+sudo cargo run -- debug trace --ssl false
 
 # Advanced filtering
-cargo run agent --pid 1234 --ssl-uid 1000 --http-filter "POST /api"
+sudo cargo run -- debug trace --pid 1234 --ssl-uid 1000 --http-filter "POST /api"
 
 # Custom output file
-cargo run agent --output /var/log/agent.log --quiet
+sudo cargo run -- debug trace --log-file /var/log/agent.log --quiet
 
-# Web server with visualization
-cargo run server
+# Web UI with visualization
+sudo cargo run -- debug trace --server
 
 # Stdio-only monitoring through the trace entrypoint
-sudo cargo run trace -- --ssl=false --process=false --stdio --pid 1234
+sudo cargo run -- debug trace --ssl false --process false --stdio --pid 1234
 ```
 
 ## Configuration Options
@@ -163,17 +166,19 @@ sudo cargo run trace -- --ssl=false --process=false --stdio --pid 1234
 - `--duration`: Minimum process duration in ms
 - `--mode`: Process filtering mode (0=all, 1=proc, 2=filter)
 
-### Agent Options
+### Debug Trace Options
 
 - `--ssl`: Enable/disable SSL monitoring
 - `--process`: Enable/disable process monitoring
 - `--stdio`: Enable/disable stdio payload monitoring
+- `--system`: Enable system resource monitoring
+- `--server`: Start the local web UI
 - `--stdio-uid`: Filter stdio events by user ID
 - `--stdio-all-fds`: Capture all file descriptors instead of only stdin/stdout/stderr
 - `--stdio-max-bytes`: Limit captured bytes per stdio event
 - `--ssl-uid`: Filter SSL events by user ID
 - `--ssl-handshake`: Show SSL handshake events
-- `--output`: Output file path
+- `--log-file`: Output file path
 - `--quiet`: Suppress console output
 
 ## Framework Architecture
@@ -238,33 +243,33 @@ pub struct Event {
 
 ```bash
 # Monitor HTTPS traffic with HTTP parsing
-cargo run ssl --http-parser --http-filter "POST /api" -- --port 443
+sudo cargo run -- debug ssl --http-parser --http-filter "POST /api" -- --port 443
 
 # Monitor Python processes with SSL
-cargo run ssl --sse-merge -- --comm python
+sudo cargo run -- debug ssl --sse-merge -- --comm python
 ```
 
 ### Process Lifecycle Tracking
 
 ```bash
 # Monitor Python processes
-cargo run process -- --comm python --duration 1000
+sudo cargo run -- debug process -- --comm python --duration 1000
 
 # Monitor specific PID
-cargo run process -- --pid 1234
+sudo cargo run -- debug process -- --pid 1234
 ```
 
 ### Combined Monitoring
 
 ```bash
 # Monitor web application
-cargo run agent --comm nginx --ssl-uid 33 --http-filter "GET /metrics"
+sudo cargo run -- debug trace -c nginx --ssl-uid 33 --http-filter "GET /metrics"
 
 # Full system monitoring with web interface
-cargo run server
+sudo cargo run -- debug trace --system --server
 
 # Log to file with quiet mode
-cargo run agent --output /var/log/system.log --quiet
+sudo cargo run -- debug trace --log-file /var/log/system.log --quiet
 ```
 
 ## Development
@@ -326,10 +331,10 @@ let process_path = binary_extractor.get_process_path();
 
 ```bash
 # Enable debug logging
-RUST_LOG=debug cargo run ssl --http-parser
+sudo env RUST_LOG=debug cargo run -- debug ssl --http-parser
 
 # Verbose eBPF program output
-cargo run ssl -- --verbose
+sudo cargo run -- debug ssl -- --verbose
 ```
 
 ## Requirements
@@ -364,11 +369,11 @@ cargo run ssl -- --verbose
 The collector includes an embedded web server with frontend for visualization:
 
 ```bash
-# Start web server with embedded frontend
-cargo run server
+# Start tracing with the embedded frontend
+sudo cargo run -- debug trace --server
 
 # Access web interface
-# http://localhost:7395/timeline
+# http://127.0.0.1:7395/timeline
 ```
 
 ### Web Interface Features

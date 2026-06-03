@@ -34,8 +34,8 @@ executable actually embeds SSL (the `node` process). You see this in the log:
 ```
 
 It accepts a container **name** or **ID**, and both `docker://name` and
-`docker:name` forms work. The scheme is supported by the `record`, `trace`, and
-`ssl` subcommands (anywhere `--binary-path` is accepted).
+`docker:name` forms work. The scheme is supported by `record`,
+`debug trace`, and `debug ssl` anywhere `--binary-path` is accepted.
 
 ## End-to-end walkthrough
 
@@ -56,16 +56,16 @@ sudo ./agentsight record -c node --binary-path docker://openclaw
 ```
 
 `record` enables SSL + process + system monitoring and serves the web UI on port
-7395 with agent-tuned filters. For finer control use `trace`:
+7395 with agent-tuned filters. For finer control use `debug trace`:
 
 ```bash
-sudo ./agentsight trace --binary-path docker://openclaw --server
+sudo ./agentsight debug trace --binary-path docker://openclaw --server
 ```
 
 Or raw SSL events only:
 
 ```bash
-sudo ./agentsight ssl --binary-path docker://openclaw --http-parser
+sudo ./agentsight debug ssl --binary-path docker://openclaw --http-parser
 ```
 
 ### 3. Trigger agent activity and view captures

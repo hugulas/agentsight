@@ -664,7 +664,7 @@ let mut ssl_runner = SslRunner::from_binary_extractor(binary_extractor.get_sslsn
     .with_args(vec!["--port", "443"])
     .add_analyzer(Box::new(ChunkMerger::new_with_timeout(30000)))
     .add_analyzer(Box::new(FileLogger::new("ssl.log").unwrap()))
-    .add_analyzer(Box::new(OutputAnalyzer::new()));
+    .add_analyzer(Box::new(FileLogger::new("events.log").unwrap()));
 
 let mut stream = ssl_runner.run().await?;
 while let Some(_event) = stream.next().await {
@@ -679,7 +679,7 @@ while let Some(_event) = stream.next().await {
 let mut process_runner = ProcessRunner::from_binary_extractor(binary_extractor.get_process_path())
     .with_id("process-raw".to_string())
     .with_args(vec!["--pid", "1234"])
-    .add_analyzer(Box::new(OutputAnalyzer::new()));
+    .add_analyzer(Box::new(FileLogger::new("events.log").unwrap()));
 
 let mut stream = process_runner.run().await?;
 while let Some(_event) = stream.next().await {
@@ -700,7 +700,7 @@ let mut agent_runner = AgentRunner::new(
 .with_id("agent-both".to_string())
 .with_comm_filter("python".to_string())
 .with_pid_filter(1234)
-.add_analyzer(Box::new(OutputAnalyzer::new()));
+.add_analyzer(Box::new(FileLogger::new("events.log").unwrap()));
 
 // Get the merged stream from both SSL and process runners
 let mut stream = agent_runner.run().await?;
@@ -751,7 +751,7 @@ let mut combined_runner = CombinedRunner::new()
     .add_runner(Box::new(ProcessRunner::from_binary_extractor(binary_extractor.get_process_path())
         .with_id("process-1234".to_string())
         .with_args(vec!["-p", "1234"])))
-    .add_analyzer(Box::new(OutputAnalyzer::new()));
+    .add_analyzer(Box::new(FileLogger::new("events.log").unwrap()));
 
 let mut stream = combined_runner.run().await?;
 while let Some(event) = stream.next().await {
@@ -781,7 +781,7 @@ let mut combined_runner = CombinedRunner::new()
         .with_args(vec!["-c", "python"])))
     .with_merge_strategy(MergeStrategy::TimeOrdered)
     .add_analyzer(Box::new(CorrelationAnalyzer::new()))
-    .add_analyzer(Box::new(OutputAnalyzer::new()));
+    .add_analyzer(Box::new(FileLogger::new("events.log").unwrap()));
 
 let mut stream = combined_runner.run().await?;
 while let Some(event) = stream.next().await {
@@ -825,7 +825,7 @@ let mut master_runner = CombinedRunner::new()
     .with_merge_strategy(MergeStrategy::Priority)
     .add_analyzer(Box::new(CorrelationAnalyzer::new()))
     .add_analyzer(Box::new(StorageAnalyzer::new(InMemoryStorage::shared())))
-    .add_analyzer(Box::new(OutputAnalyzer::new()));
+    .add_analyzer(Box::new(FileLogger::new("events.log").unwrap()));
 
 let mut stream = master_runner.run().await?;
 while let Some(event) = stream.next().await {
@@ -844,7 +844,7 @@ let agent_runner = CombinedRunner::ssl_and_process(
     binary_extractor.get_sslsniff_path(),
     binary_extractor.get_process_path()
 )
-.add_analyzer(Box::new(OutputAnalyzer::new()));
+.add_analyzer(Box::new(FileLogger::new("events.log").unwrap()));
 
 // Multiple SSL runners with different configurations
 let multi_ssl_runner = CombinedRunner::multiple_ssl(
@@ -860,7 +860,7 @@ let multi_ssl_runner = CombinedRunner::multiple_ssl(
         },
     ]
 )
-.add_analyzer(Box::new(OutputAnalyzer::new()));
+.add_analyzer(Box::new(FileLogger::new("events.log").unwrap()));
 
 // Multiple Process runners with different configurations
 let multi_process_runner = CombinedRunner::multiple_process(
@@ -883,7 +883,7 @@ let multi_process_runner = CombinedRunner::multiple_process(
         },
     ]
 )
-.add_analyzer(Box::new(OutputAnalyzer::new()));
+.add_analyzer(Box::new(FileLogger::new("events.log").unwrap()));
 ```
 
 ### 9. Dynamic Runtime Configuration
@@ -917,7 +917,7 @@ if enable_storage {
     combined_runner = combined_runner.add_analyzer(Box::new(StorageAnalyzer::new(InMemoryStorage::shared())));
 }
 
-combined_runner = combined_runner.add_analyzer(Box::new(OutputAnalyzer::new()));
+combined_runner = combined_runner.add_analyzer(Box::new(FileLogger::new("events.log").unwrap()));
 
 let mut stream = combined_runner.run().await?;
 while let Some(event) = stream.next().await {
@@ -1026,7 +1026,7 @@ async fn run_raw_ssl(binary_extractor: &BinaryExtractor, enable_chunk_merger: bo
     
     ssl_runner = ssl_runner
         .add_analyzer(Box::new(FileLogger::new("ssl.log").unwrap()))
-        .add_analyzer(Box::new(OutputAnalyzer::new()));
+        .add_analyzer(Box::new(FileLogger::new("events.log").unwrap()));
     
     let mut stream = ssl_runner.run().await?;
     while let Some(_event) = stream.next().await {
@@ -1049,7 +1049,7 @@ async fn run_raw_process(binary_extractor: &BinaryExtractor, args: &Vec<String>)
         process_runner = process_runner.with_args(args);
     }
     
-    process_runner = process_runner.add_analyzer(Box::new(OutputAnalyzer::new()));
+    process_runner = process_runner.add_analyzer(Box::new(FileLogger::new("events.log").unwrap()));
     
     let mut stream = process_runner.run().await?;
     while let Some(_event) = stream.next().await {
@@ -1081,7 +1081,7 @@ async fn run_both_real(binary_extractor: &BinaryExtractor, comm: Option<&str>, p
         let mut ssl_runner = SslRunner::from_binary_extractor(ssl_path)
             .with_id("ssl-both".to_string())
             .with_args(&args)
-            .add_analyzer(Box::new(OutputAnalyzer::new()));
+            .add_analyzer(Box::new(FileLogger::new("events.log").unwrap()));
         
         match ssl_runner.run().await {
             Ok(mut stream) => {
@@ -1102,7 +1102,7 @@ async fn run_both_real(binary_extractor: &BinaryExtractor, comm: Option<&str>, p
         let mut process_runner = ProcessRunner::from_binary_extractor(process_path)
             .with_id("process".to_string())
             .with_args(&args)
-            .add_analyzer(Box::new(OutputAnalyzer::new()));
+            .add_analyzer(Box::new(FileLogger::new("events.log").unwrap()));
         
         match process_runner.run().await {
             Ok(mut stream) => {

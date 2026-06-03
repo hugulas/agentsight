@@ -49,7 +49,7 @@ AgentSight capture:
 
 ```bash
 sudo -n env PATH="$PATH" HOME="$HOME" \
-  ./collector/target/debug/agentsight exec \
+  ./collector/target/debug/agentsight record \
   --no-server \
   --db /tmp/agentsight-claude.db \
   --adapter auto \
@@ -67,7 +67,7 @@ Summary:
 
 Evidence sources:
 
-- OS process/file/network facts from AgentSight `exec`.
+- OS process/file/network facts from AgentSight `record`.
 - Token/model data from Anthropic response usage, Claude Code telemetry request
   payloads, or Claude-native local session logs under `~/.claude/projects`.
 - Not from Claude Code terminal stdout/stderr.
@@ -98,7 +98,7 @@ AgentSight capture:
 ```bash
 tmp=$(mktemp -d)
 sudo -n env PATH="$PATH" HOME="$HOME" \
-  ./collector/target/debug/agentsight exec \
+  ./collector/target/debug/agentsight record \
   --no-server \
   --db /tmp/agentsight-codex.db \
   --adapter auto \
@@ -119,7 +119,7 @@ Local Codex summary:
 
 Evidence sources:
 
-- OS process/file/network facts from AgentSight `exec`.
+- OS process/file/network facts from AgentSight `record`.
 - Token/model/tool data from Codex-native JSONL session logs under
   `~/.codex/sessions`.
 - Current SQLite SQL adapters do not include a Codex-specific projection.
@@ -160,7 +160,7 @@ AgentSight capture:
 ```bash
 tmp=$(mktemp -d)
 sudo -n env PATH="$PATH" HOME="$HOME" \
-  ./collector/target/debug/agentsight exec \
+  ./collector/target/debug/agentsight record \
   --no-server \
   --db /tmp/agentsight-opencode.db \
   --no-adapters \
@@ -171,7 +171,7 @@ rm -rf "$tmp"
 
 Evidence sources:
 
-- OS process/file/network facts from AgentSight `exec`.
+- OS process/file/network facts from AgentSight `record`.
 - OpenCode token/cost/session data from OpenCode itself, for example
   `opencode stats --days 1 --models` and its local database/log files.
 - Not from terminal stdout/stderr.
@@ -199,7 +199,7 @@ AgentSight capture:
 
 ```bash
 sudo -n env PATH="$PATH" HOME="$HOME" \
-  ./collector/target/debug/agentsight exec \
+  ./collector/target/debug/agentsight record \
   --no-server \
   --db /tmp/agentsight-gemini.db \
   --adapter auto \
@@ -209,7 +209,7 @@ sudo -n env PATH="$PATH" HOME="$HOME" \
 
 Evidence sources:
 
-- OS process/file/network facts from AgentSight `exec`.
+- OS process/file/network facts from AgentSight `record`.
 - Gemini token data only when AgentSight parses network response usage such as
   Gemini `usageMetadata`.
 - Gemini's own `--output-format json` prints token stats to the terminal, but

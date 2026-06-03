@@ -13,7 +13,7 @@ Spec: <https://opentelemetry.io/docs/specs/semconv/gen-ai/>
 Point AgentSight at a running collector with `--otel`:
 
 ```bash
-sudo ./agentsight trace --otel --otel-endpoint http://localhost:4318
+sudo ./agentsight debug trace --otel --otel-endpoint http://localhost:4318
 ```
 
 Each LLM request/response pair becomes a `chat {model}` CLIENT span. By default
