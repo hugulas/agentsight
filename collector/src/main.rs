@@ -595,9 +595,9 @@ async fn main() {
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Initialize env_logger with default log level of info
+    // Keep command output clean by default; RUST_LOG can opt into info/debug logs.
     env_logger::Builder::from_default_env()
-        .filter_level(log::LevelFilter::Info)
+        .filter_level(log::LevelFilter::Warn)
         .init();
 
     let cli = Cli::parse();
@@ -674,7 +674,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             return Ok(());
         }
         Commands::Top {
-            db,
+            db: Some(db),
             pid,
             comm,
             sort,
@@ -691,11 +691,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 sort: sort.clone(),
                 view: view.clone(),
             };
-            if let Some(db) = db {
-                run_top_query(db, *interval, *limit, count, &options)?;
-            } else {
-                run_live_top_query(*interval, *limit, count, &options)?;
-            }
+            run_top_query(db, *interval, *limit, count, &options)?;
             return Ok(());
         }
         Commands::Prompts { db, limit, json } => {
@@ -850,6 +846,29 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             if let Some(ref db) = db_path_for_summary {
                 print_session_summary(db);
             }
+        }
+        Commands::Top {
+            db: None,
+            pid,
+            comm,
+            sort,
+            view,
+            interval,
+            limit,
+            count,
+            once,
+        } => {
+            let count = if *once { Some(1) } else { *count };
+            let options = TopOptions {
+                pid: *pid,
+                comm: comm.clone(),
+                sort: sort.clone(),
+                view: view.clone(),
+            };
+            run_live_top_query(&binary_extractor, *interval, *limit, count, &options).await?;
+        }
+        Commands::Top { db: Some(_), .. } => {
+            unreachable!("top --db is handled before binary extraction");
         }
         Commands::Debug(cmd) => match cmd {
             DebugCommands::Ssl {
@@ -1048,7 +1067,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Commands::Db(_)
         | Commands::Discover { .. }
         | Commands::Report { .. }
-        | Commands::Top { .. }
         | Commands::Prompts { .. }
         | Commands::List => unreachable!(),
     }

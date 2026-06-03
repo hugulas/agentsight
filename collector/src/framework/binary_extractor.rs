@@ -23,12 +23,10 @@ pub struct BinaryExtractor {
 
 impl BinaryExtractor {
     pub async fn new() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        println!("Creating temporary directory...");
-
         let temp_dir = TempDir::new()?;
         let temp_path = temp_dir.path();
 
-        println!("Created temporary directory: {}", temp_path.display());
+        log::debug!("Created temporary directory: {}", temp_path.display());
 
         // Extract and setup the process binary
         let process_path = temp_path.join("process");
@@ -66,7 +64,7 @@ impl BinaryExtractor {
         perms.set_mode(0o755);
         fs::set_permissions(path, perms)?;
 
-        println!("Extracted {} binary to: {}", name, path.display());
+        log::debug!("Extracted {} binary to: {}", name, path.display());
 
         Ok(())
     }
@@ -103,7 +101,7 @@ impl BinaryExtractor {
         let mut perms = fs::metadata(&stdiocap_path)?.permissions();
         perms.set_mode(0o755);
         fs::set_permissions(&stdiocap_path, perms)?;
-        println!("Extracted stdiocap binary to: {}", stdiocap_path.display());
+        log::debug!("Extracted stdiocap binary to: {}", stdiocap_path.display());
 
         self.stdiocap_path
             .set(stdiocap_path)

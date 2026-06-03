@@ -44,9 +44,8 @@ fn sync_frontend(manifest_dir: &Path, repo_root: &Path) {
     if source_dir.join("index.html").exists() {
         println!("cargo:rerun-if-changed={}", source_dir.display());
         if vendor_dir.exists() {
-            fs::remove_dir_all(&vendor_dir).unwrap_or_else(|err| {
-                panic!("failed to clear {}: {err}", vendor_dir.display())
-            });
+            fs::remove_dir_all(&vendor_dir)
+                .unwrap_or_else(|err| panic!("failed to clear {}: {err}", vendor_dir.display()));
         }
         copy_dir(&source_dir, &vendor_dir).unwrap_or_else(|err| {
             panic!(

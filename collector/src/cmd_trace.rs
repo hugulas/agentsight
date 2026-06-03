@@ -441,9 +441,7 @@ pub(crate) async fn start_web_server_if_enabled(
     let addr = format!("{}:{}", listen, port)
         .parse()
         .map_err(|e| format!("Invalid server address: {}", e))?;
-    let token = uuid::Uuid::new_v4().to_string();
-
-    let web_server = WebServer::new(log_file, db_path, Some(token.clone()))
+    let web_server = WebServer::new(log_file, db_path)
         .map_err(|e| format!("Failed to create web server: {}", e))?;
 
     let host = if listen == "0.0.0.0" || listen == "::" {
@@ -451,7 +449,7 @@ pub(crate) async fn start_web_server_if_enabled(
     } else {
         listen
     };
-    let url = format!("http://{}:{}/?token={}", host, port, token);
+    let url = format!("http://{}:{}/", host, port);
     println!("Starting web server on {}", url);
 
     let server_handle = tokio::spawn(async move {

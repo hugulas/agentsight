@@ -5,15 +5,20 @@ use crate::cli_output::{
     AgentTopOutput, AgentTopRow, ResourcePeaks, StatOutput, TopSection, clear_screen,
     print_agent_top, print_json, print_stat,
 };
+use crate::framework::binary_extractor::BinaryExtractor;
+use crate::framework::core::Event;
+use crate::framework::runners::{ProcessRunner, Runner};
 use crate::framework::storage::{
     SnapshotOptions, SqliteStore,
     sqlite::{Snapshot, StorageResult},
 };
+use futures::StreamExt;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 #[derive(Debug, Clone)]
@@ -22,6 +27,199 @@ pub(crate) struct TopOptions {
     pub(crate) comm: Option<String>,
     pub(crate) sort: String,
     pub(crate) view: String,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct CaptureCounters {
+    execs: usize,
+    failures: usize,
+    files: usize,
+    network: usize,
+}
+
+impl CaptureCounters {
+    fn add(&mut self, other: CaptureCounters) {
+        self.execs += other.execs;
+        self.failures += other.failures;
+        self.files += other.files;
+        self.network += other.network;
+    }
+
+    fn is_empty(self) -> bool {
+        self.execs == 0 && self.failures == 0 && self.files == 0 && self.network == 0
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct LiveCaptureSnapshot {
+    by_pid: HashMap<u32, CaptureCounters>,
+    events: u64,
+    parse_errors: u64,
+}
+
+#[derive(Default)]
+struct LiveCaptureState {
+    by_pid: HashMap<u32, CaptureCounters>,
+    events: u64,
+    parse_errors: u64,
+}
+
+struct LiveEbpfCapture {
+    state: Arc<Mutex<LiveCaptureState>>,
+    handle: tokio::task::JoinHandle<()>,
+    start_note: Option<String>,
+}
+
+impl LiveEbpfCapture {
+    fn snapshot(&self) -> LiveCaptureSnapshot {
+        let Ok(state) = self.state.lock() else {
+            return LiveCaptureSnapshot::default();
+        };
+        LiveCaptureSnapshot {
+            by_pid: state.by_pid.clone(),
+            events: state.events,
+            parse_errors: state.parse_errors,
+        }
+    }
+
+    fn start_note(&self) -> Option<String> {
+        self.start_note.clone()
+    }
+
+    fn stop(self) {
+        self.handle.abort();
+    }
+}
+
+async fn start_live_ebpf_capture(
+    binary_extractor: &BinaryExtractor,
+    options: &TopOptions,
+) -> Option<LiveEbpfCapture> {
+    let start_note = match prepare_live_ebpf_privileges() {
+        Ok(note) => note,
+        Err(note) => {
+            return Some(LiveEbpfCapture {
+                state: Arc::new(Mutex::new(LiveCaptureState::default())),
+                handle: tokio::spawn(async {}),
+                start_note: Some(note),
+            });
+        }
+    };
+
+    let mut args = Vec::new();
+    if let Some(pid) = options.pid {
+        args.extend(["-p".to_string(), pid.to_string()]);
+    } else if let Some(comm) = &options.comm {
+        args.extend(["-c".to_string(), comm.clone()]);
+    } else {
+        args.extend(["-m".to_string(), "1".to_string()]);
+    }
+
+    let mut runner = ProcessRunner::from_binary_extractor(binary_extractor.get_process_path())
+        .with_args(args.iter().map(String::as_str));
+    let state = Arc::new(Mutex::new(LiveCaptureState::default()));
+    let state_for_task = Arc::clone(&state);
+
+    let stream = match runner.run().await {
+        Ok(stream) => stream,
+        Err(err) => {
+            return Some(LiveEbpfCapture {
+                state,
+                handle: tokio::spawn(async {}),
+                start_note: Some(format!("live eBPF capture did not start: {err}")),
+            });
+        }
+    };
+
+    let handle = tokio::spawn(async move {
+        consume_live_ebpf_stream(stream, state_for_task).await;
+    });
+
+    Some(LiveEbpfCapture {
+        state,
+        handle,
+        start_note,
+    })
+}
+
+fn prepare_live_ebpf_privileges() -> Result<Option<String>, String> {
+    if unsafe { libc::geteuid() } == 0 {
+        return Ok(Some("live eBPF process capture enabled".to_string()));
+    }
+
+    let cached = std::process::Command::new("sudo")
+        .args(["-n", "true"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    if cached {
+        return Ok(Some(
+            "live eBPF process capture enabled via cached sudo".to_string(),
+        ));
+    }
+
+    let interactive = unsafe { libc::isatty(libc::STDIN_FILENO) == 1 };
+    if !interactive {
+        return Err("live eBPF capture requires sudo; non-interactive top is showing /proc + local sessions only".to_string());
+    }
+
+    eprintln!("🔑 top live eBPF capture requires root. Requesting sudo access...");
+    let ok = std::process::Command::new("sudo")
+        .arg("-v")
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    if ok {
+        Ok(Some("live eBPF process capture enabled".to_string()))
+    } else {
+        Err("live eBPF capture did not start: sudo authentication failed".to_string())
+    }
+}
+
+async fn consume_live_ebpf_stream(
+    mut stream: crate::framework::runners::EventStream,
+    state: Arc<Mutex<LiveCaptureState>>,
+) {
+    while let Some(event) = stream.next().await {
+        record_live_ebpf_event(&state, &event);
+    }
+}
+
+fn record_live_ebpf_event(state: &Arc<Mutex<LiveCaptureState>>, event: &Event) {
+    let Ok(mut state) = state.lock() else {
+        return;
+    };
+    state.events += 1;
+
+    if event.source == "diagnostic" {
+        if event.data.get("type").and_then(|value| value.as_str()) == Some("runner_parse_error") {
+            state.parse_errors += 1;
+        }
+        return;
+    }
+
+    let Some(kind) = event.data.get("event").and_then(|value| value.as_str()) else {
+        return;
+    };
+    let counters = state.by_pid.entry(event.pid).or_default();
+    match kind {
+        "EXEC" => counters.execs += 1,
+        "EXIT" => {
+            if event
+                .data
+                .get("exit_code")
+                .and_then(|value| value.as_u64())
+                .is_some_and(|code| code != 0)
+            {
+                counters.failures += 1;
+            }
+        }
+        value if value.contains("FILE_") || value == "WRITE" => counters.files += 1,
+        value if value.starts_with("NET_") => counters.network += 1,
+        _ => {}
+    }
 }
 
 pub(crate) fn run_stat_query(
@@ -70,7 +268,8 @@ pub(crate) fn run_top_query(
     Ok(())
 }
 
-pub(crate) fn run_live_top_query(
+pub(crate) async fn run_live_top_query(
+    binary_extractor: &BinaryExtractor,
     interval_secs: u64,
     limit: usize,
     count: Option<u32>,
@@ -81,13 +280,26 @@ pub(crate) fn run_live_top_query(
     let mut iterations = 0u32;
     let should_clear_screen = count != Some(1);
     let mut previous: Option<LiveSample> = None;
+    let capture = start_live_ebpf_capture(binary_extractor, options).await;
 
     loop {
         let sample = LiveSample::collect()?;
         if should_clear_screen {
             clear_screen();
         }
-        let mut top = build_live_top(&sample, previous.as_ref(), limit, options);
+        let capture_snapshot = capture.as_ref().map(LiveEbpfCapture::snapshot);
+        let mut top = build_live_top(
+            &sample,
+            previous.as_ref(),
+            capture_snapshot.as_ref(),
+            limit,
+            options,
+        );
+        if let Some(capture) = &capture
+            && let Some(note) = capture.start_note()
+        {
+            top.notes.push(note);
+        }
         sort_agent_rows(&mut top.rows, &options.sort);
         top.rows.truncate(limit);
         print_agent_top(&top);
@@ -99,6 +311,10 @@ pub(crate) fn run_live_top_query(
             break;
         }
         std::thread::sleep(interval);
+    }
+
+    if let Some(capture) = capture {
+        capture.stop();
     }
 
     Ok(())
@@ -605,6 +821,7 @@ impl LiveSample {
 fn build_live_top<'a>(
     sample: &LiveSample,
     previous: Option<&LiveSample>,
+    capture: Option<&LiveCaptureSnapshot>,
     _limit: usize,
     options: &TopOptions,
 ) -> AgentTopOutput<'a> {
@@ -658,9 +875,13 @@ fn build_live_top<'a>(
             .map(|pid| !used_live_pids.contains(&pid))
             .unwrap_or(true)
     }));
+    if let Some(capture) = capture {
+        apply_live_capture(&mut rows, sample, capture);
+    }
 
     let has_local = rows.iter().any(|row| row.trace.contains("local"));
     let has_proc = rows.iter().any(|row| row.trace.contains("proc"));
+    let has_ebpf = rows.iter().any(|row| row.trace.contains("ebpf"));
     let mut notes = Vec::new();
     if has_local {
         notes.push(
@@ -669,10 +890,21 @@ fn build_live_top<'a>(
         );
     }
     if has_proc {
+        notes.push("proc evidence uses /proc for CPU/RSS/process families".to_string());
+    }
+    if has_ebpf {
         notes.push(
-            "proc evidence uses /proc; run agentsight record/stat for live files, network, and failures"
+            "ebpf evidence is live process capture; SSL/network/token details still require record/stat or local agent logs"
                 .to_string(),
         );
+    }
+    if let Some(capture) = capture
+        && capture.parse_errors > 0
+    {
+        notes.push(format!(
+            "ebpf process capture had {} parse errors",
+            capture.parse_errors
+        ));
     }
     if rows.is_empty() {
         if options.pid.is_some() || options.comm.is_some() {
@@ -699,6 +931,54 @@ fn build_live_top<'a>(
         sections: Vec::new(),
         failures: Vec::new(),
         notes,
+    }
+}
+
+fn apply_live_capture(
+    rows: &mut [AgentTopRow],
+    sample: &LiveSample,
+    capture: &LiveCaptureSnapshot,
+) {
+    if capture.events == 0 {
+        return;
+    }
+
+    let children = children_by_ppid(&sample.procs);
+    let mut attributed = HashSet::new();
+    for row in rows.iter_mut() {
+        let Some(root_pid) = row.pid else {
+            continue;
+        };
+        let family = live_process_family(root_pid, &children, &sample.procs);
+        let mut counters = CaptureCounters::default();
+        for pid in family {
+            if let Some(pid_counters) = capture.by_pid.get(&pid) {
+                counters.add(*pid_counters);
+                attributed.insert(pid);
+            }
+        }
+        if counters.is_empty() {
+            continue;
+        }
+        row.execs += counters.execs;
+        row.failures += counters.failures;
+        row.files += counters.files;
+        row.network += counters.network;
+        if !row.trace.contains("ebpf") {
+            row.trace = format!("{}+ebpf", row.trace);
+        }
+    }
+
+    let unattributed = capture
+        .by_pid
+        .iter()
+        .filter(|(pid, counters)| !attributed.contains(pid) && !counters.is_empty())
+        .count();
+    if unattributed == 0 {
+        return;
+    }
+    if let Some(row) = rows.iter_mut().find(|row| row.trace.contains("ebpf")) {
+        row.unattributed += unattributed;
     }
 }
 

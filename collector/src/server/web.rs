@@ -19,14 +19,12 @@ pub struct WebServer {
     assets: Arc<FrontendAssets>,
     log_file: String,
     db_path: Option<String>,
-    token: Option<String>,
 }
 
 impl WebServer {
     pub fn new(
         log_file: &str,
         db_path: Option<&str>,
-        token: Option<String>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let assets = FrontendAssets::new()?;
         Ok(Self {
@@ -35,7 +33,6 @@ impl WebServer {
             db_path: db_path
                 .map(str::to_string)
                 .or_else(|| std::env::var("AGENTSIGHT_DB_PATH").ok()),
-            token,
         })
     }
 
@@ -69,18 +66,11 @@ impl WebServer {
             let assets = Arc::clone(&self.assets);
             let log_file = self.log_file.clone();
             let db_path = self.db_path.clone();
-            let token = self.token.clone();
 
             tokio::spawn(async move {
                 let io = TokioIo::new(stream);
                 let service = service_fn(move |req| {
-                    handle_request(
-                        req,
-                        assets.clone(),
-                        log_file.clone(),
-                        db_path.clone(),
-                        token.clone(),
-                    )
+                    handle_request(req, assets.clone(), log_file.clone(), db_path.clone())
                 });
 
                 if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
@@ -96,25 +86,13 @@ async fn handle_request(
     assets: Arc<FrontendAssets>,
     log_file: String,
     db_path: Option<String>,
-    token: Option<String>,
 ) -> std::result::Result<Response<Full<Bytes>>, Infallible> {
     let path = req.uri().path();
     let query = req.uri().query().map(str::to_string);
-    let token_from_query = query_param(query.as_deref(), "token");
-
-    if let Some(expected) = token.as_deref()
-        && token_from_query.as_deref() != Some(expected)
-        && !request_has_token_cookie(&req, expected)
-    {
-        return Ok(json_error(
-            StatusCode::UNAUTHORIZED,
-            "missing or invalid token",
-        ));
-    }
 
     log::info!("📨 {} {}", req.method(), path);
 
-    let mut response = match (req.method(), path) {
+    let response = match (req.method(), path) {
         // API endpoints first
         (&Method::GET, "/api/events") => serve_events_api(&log_file).await,
         (&Method::GET, "/api/assets") => serve_assets_list(assets).await,
@@ -156,17 +134,6 @@ async fn handle_request(
                 .unwrap())
         }
     }?;
-
-    if let Some(expected) = token.as_deref()
-        && token_from_query.as_deref() == Some(expected)
-    {
-        response.headers_mut().insert(
-            "Set-Cookie",
-            format!("agentsight_token={expected}; Path=/; SameSite=Strict")
-                .parse()
-                .unwrap(),
-        );
-    }
 
     Ok(response)
 }
@@ -327,19 +294,6 @@ fn json_response<T: Serialize>(status: StatusCode, value: &T) -> Response<Full<B
 
 fn json_error(status: StatusCode, message: &str) -> Response<Full<Bytes>> {
     json_response(status, &serde_json::json!({ "error": message }))
-}
-
-fn request_has_token_cookie(req: &Request<hyper::body::Incoming>, expected: &str) -> bool {
-    req.headers()
-        .get("Cookie")
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|cookie| {
-            cookie.split(';').any(|part| {
-                part.trim()
-                    .strip_prefix("agentsight_token=")
-                    .is_some_and(|value| value == expected)
-            })
-        })
 }
 
 fn query_param(query: Option<&str>, name: &str) -> Option<String> {
