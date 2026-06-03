@@ -18,7 +18,7 @@ sudo agentsight top
 ```
 
 <div align="center">
-  <img src="docs/top-mode-demo.png" alt="AgentSight top 实时 session 视图" width="1000">
+  <img src="https://github.com/eunomia-bpf/agentsight/raw/master/docs/top-mode-demo.png" alt="AgentSight top 实时 session 视图" width="1000">
   <p><em>按 model、session token、health、进程族、工具调用、文件活动和网络活动排序的实时智能体视图</em></p>
 </div>
 

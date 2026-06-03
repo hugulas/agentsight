@@ -31,7 +31,7 @@ sudo agentsight top
 ```
 
 <div align="center">
-  <img src="docs/top-mode-demo.png" alt="AgentSight top live session view" width="1000">
+  <img src="https://github.com/eunomia-bpf/agentsight/raw/master/docs/top-mode-demo.png" alt="AgentSight top live session view" width="1000">
   <p><em>Live sessions ranked by model, session tokens, health, process family, tool calls, file activity, and network activity</em></p>
 </div>
 
