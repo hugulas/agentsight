@@ -6,8 +6,8 @@ use crate::json::{
     i64_field as json_i64, parse_optional_value as parse_optional_json,
     parse_value as parse_json_value,
 };
-use crate::semantic::llm::TokenUsage;
-use crate::semantic::{
+use crate::view::llm::TokenUsage;
+use crate::view::{
     CanonicalEvent, EventKind, body_json, extract_model, extract_token_usage,
     extract_token_usage_from_sse, normalize_event, provider_from_host,
 };

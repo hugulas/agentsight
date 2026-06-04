@@ -8,11 +8,11 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::json::i64_field as json_i64;
-use crate::text::{sanitize_ascii_identifier as sanitize_id, short_session_id, truncate_text};
-use crate::view::MaterializedView;
 use crate::model::{
     AGENT_NATIVE_SOURCE, SessionRow, Snapshot, SnapshotOptions, TokenUsageRow, ToolCallRow,
 };
+use crate::text::{sanitize_ascii_identifier as sanitize_id, short_session_id, truncate_text};
+use crate::view::MaterializedView;
 
 pub(crate) struct SessionCache {
     entries: HashMap<PathBuf, CacheEntry>,
@@ -153,12 +153,12 @@ pub(crate) fn import_recent(view: &mut MaterializedView, limit: usize) {
 
 pub(crate) fn import_into_view(view: &mut MaterializedView, sessions: &[LocalSession]) {
     for session in sessions {
-        view.load_session(session_row(session));
+        view.upsert_session(&session_row(session));
         for row in token_rows(session) {
-            view.load_token_usage(row);
+            view.apply_token_usage(&row);
         }
         for row in tool_rows(session) {
-            view.load_tool_call(row);
+            view.apply_tool_call(&row);
         }
     }
 }

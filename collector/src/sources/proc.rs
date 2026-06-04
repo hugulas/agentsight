@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::PathBuf;
 use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +26,7 @@ pub(crate) struct ProcInfo {
     pub(crate) session_id: u32,
     pub(crate) comm: String,
     pub(crate) command: String,
+    pub(crate) cwd: Option<PathBuf>,
     pub(crate) ticks: u64,
     pub(crate) starttime_ticks: u64,
     pub(crate) rss_kb: u64,
@@ -34,11 +35,30 @@ pub(crate) struct ProcInfo {
     pub(crate) threads: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct ProcessKey {
+    pub(crate) pid: u32,
+    pub(crate) starttime_ticks: u64,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ProcessTree {
+    pub(crate) root: ProcessKey,
+    pub(crate) members: Vec<ProcessKey>,
+}
+
 impl ProcInfo {
     pub(crate) fn seed(&self) -> PidSeed {
         PidSeed {
             pid: self.pid,
             ppid: self.ppid,
+        }
+    }
+
+    pub(crate) fn process_key(&self) -> ProcessKey {
+        ProcessKey {
+            pid: self.pid,
+            starttime_ticks: self.starttime_ticks,
         }
     }
 }
@@ -82,6 +102,22 @@ impl ProcSnapshot {
         process_family(root, &self.children_by_ppid(), &self.procs)
     }
 
+    pub(crate) fn process_tree(
+        &self,
+        root: u32,
+        children: &HashMap<u32, Vec<u32>>,
+    ) -> Option<ProcessTree> {
+        let root_key = self.procs.get(&root)?.process_key();
+        let members = process_family(root, children, &self.procs)
+            .into_iter()
+            .filter_map(|pid| self.procs.get(&pid).map(ProcInfo::process_key))
+            .collect();
+        Some(ProcessTree {
+            root: root_key,
+            members,
+        })
+    }
+
     pub(crate) fn seeds_for_all(&self) -> Vec<PidSeed> {
         self.procs.values().map(ProcInfo::seed).collect()
     }
@@ -101,37 +137,6 @@ impl ProcSnapshot {
             .collect()
     }
 
-    pub(crate) fn seeds_for_comm(&self, comm: &str) -> Vec<PidSeed> {
-        let roots = self
-            .procs
-            .values()
-            .filter(|proc_info| process_matches_comm(proc_info, comm))
-            .filter(|proc_info| !matching_ancestor(proc_info, self, comm))
-            .map(|proc_info| proc_info.pid)
-            .collect::<Vec<_>>();
-
-        let mut seen = HashSet::new();
-        let mut out = Vec::new();
-        for pid in roots {
-            for family_pid in self.process_family(pid) {
-                if seen.insert(family_pid)
-                    && let Some(proc_info) = self.procs.get(&family_pid)
-                {
-                    out.push(proc_info.seed());
-                }
-            }
-        }
-        out
-    }
-
-    pub(crate) fn pids_matching_comm(&self, comm: &str) -> Vec<u32> {
-        self.procs
-            .values()
-            .filter(|proc_info| process_matches_comm(proc_info, comm))
-            .map(|proc_info| proc_info.pid)
-            .collect()
-    }
-
     pub(crate) fn pids_in_session(&self, session_id: u32) -> Vec<u32> {
         self.procs
             .values()
@@ -139,6 +144,29 @@ impl ProcSnapshot {
             .map(|proc_info| proc_info.pid)
             .collect()
     }
+}
+
+pub(crate) fn collect_fd_paths(
+    process_trees: &[ProcessTree],
+) -> HashMap<ProcessKey, BTreeSet<PathBuf>> {
+    let mut out = HashMap::new();
+
+    for tree in process_trees {
+        for key in &tree.members {
+            if process_starttime_ticks(key.pid) != Some(key.starttime_ticks) {
+                continue;
+            }
+            let paths = scan_proc_fd_paths(key.pid);
+            if process_starttime_ticks(key.pid) != Some(key.starttime_ticks) {
+                continue;
+            }
+            if !paths.is_empty() {
+                out.insert(*key, paths);
+            }
+        }
+    }
+
+    out
 }
 
 pub(crate) fn children_by_ppid(procs: &BTreeMap<u32, ProcInfo>) -> HashMap<u32, Vec<u32>> {
@@ -198,38 +226,12 @@ pub(crate) fn process_age_s(proc_info: &ProcInfo, sample: &ProcSnapshot) -> f64 
     (sample.uptime_s - process_start_s).max(0.0)
 }
 
-pub(crate) fn agent_label_from_command(comm: &str, command: &str) -> String {
-    known_agent_label(comm, command)
-        .map(str::to_string)
-        .unwrap_or_else(|| {
-            if !comm.is_empty() && comm != "unknown" {
-                comm.to_string()
-            } else {
-                command
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or("agent")
-                    .to_string()
-            }
-        })
-}
-
-pub(crate) fn known_agent_label(comm: &str, command: &str) -> Option<&'static str> {
-    label_from_exec_token(comm).or_else(|| label_from_command_argv(command))
-}
-
-pub(crate) fn process_matches_comm(proc_info: &ProcInfo, wanted: &str) -> bool {
-    let wanted = wanted.to_ascii_lowercase();
-    executable_tokens(&proc_info.command)
-        .chain(std::iter::once(proc_info.comm.as_str()))
-        .any(|token| token.to_ascii_lowercase().contains(&wanted))
-}
-
 fn read_proc_info(pid: u32, page_size: u64) -> Option<ProcInfo> {
     let proc_dir = format!("/proc/{pid}");
     let stat = fs::read_to_string(format!("{proc_dir}/stat")).ok()?;
     let (comm, ppid, session_id, ticks, starttime_ticks) = parse_proc_stat(&stat)?;
     let command = read_cmdline(pid).unwrap_or_else(|| comm.clone());
+    let cwd = read_cwd(pid);
     let (rss_kb, rss_mb, vsz_kb) = read_statm(pid, page_size).unwrap_or_default();
     let threads = read_thread_count(pid);
     Some(ProcInfo {
@@ -238,6 +240,7 @@ fn read_proc_info(pid: u32, page_size: u64) -> Option<ProcInfo> {
         session_id,
         comm,
         command,
+        cwd,
         ticks,
         starttime_ticks,
         rss_kb,
@@ -245,6 +248,25 @@ fn read_proc_info(pid: u32, page_size: u64) -> Option<ProcInfo> {
         vsz_kb,
         threads,
     })
+}
+
+pub(crate) fn process_starttime_ticks(pid: u32) -> Option<u64> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    parse_proc_stat(&stat).map(|(_, _, _, _, starttime_ticks)| starttime_ticks)
+}
+
+pub(crate) fn scan_proc_fd_paths(pid: u32) -> BTreeSet<PathBuf> {
+    let mut out = BTreeSet::new();
+    let Ok(entries) = fs::read_dir(format!("/proc/{pid}/fd")) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let Ok(target) = fs::read_link(entry.path()) else {
+            continue;
+        };
+        out.insert(target);
+    }
+    out
 }
 
 fn parse_proc_stat(stat: &str) -> Option<(String, u32, u32, u64, u64)> {
@@ -275,6 +297,10 @@ fn read_cmdline(pid: u32) -> Option<String> {
         .collect::<Vec<_>>()
         .join(" ");
     (!command.is_empty()).then_some(command)
+}
+
+fn read_cwd(pid: u32) -> Option<PathBuf> {
+    fs::read_link(format!("/proc/{pid}/cwd")).ok()
 }
 
 fn read_statm(pid: u32, page_size: u64) -> Option<(u64, u64, u64)> {
@@ -312,6 +338,12 @@ fn read_uptime_s() -> Option<f64> {
         .ok()
 }
 
+pub(crate) fn process_start_timestamp_ms(starttime_ticks: u64) -> Option<u64> {
+    let boot_ms = u64::try_from(crate::time::get_boot_time_secs().saturating_mul(1000)).ok()?;
+    let process_offset_ms = ((starttime_ticks as f64 / ticks_per_second()) * 1000.0).round() as u64;
+    Some(boot_ms.saturating_add(process_offset_ms))
+}
+
 fn page_size_bytes() -> u64 {
     let value = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
     if value > 0 { value as u64 } else { 4096 }
@@ -328,142 +360,18 @@ fn read_thread_count(pid: u32) -> u32 {
         .unwrap_or(1)
 }
 
-fn matching_ancestor(proc_info: &ProcInfo, snapshot: &ProcSnapshot, comm: &str) -> bool {
-    let mut parent_pid = proc_info.ppid;
-    let mut seen = HashSet::new();
-    while parent_pid > 0 && seen.insert(parent_pid) {
-        let Some(parent) = snapshot.procs.get(&parent_pid) else {
-            break;
-        };
-        if process_matches_comm(parent, comm) {
-            return true;
-        }
-        parent_pid = parent.ppid;
-    }
-    false
-}
-
-fn label_from_command_argv(command: &str) -> Option<&'static str> {
-    let mut args = command.split_whitespace();
-    let argv0 = args.next()?;
-    if let Some(label) = label_from_exec_token(argv0) {
-        return Some(label);
-    }
-
-    args.filter(|arg| looks_like_exec_path(arg))
-        .find_map(label_from_exec_token)
-}
-
-fn executable_tokens(command: &str) -> impl Iterator<Item = &str> {
-    let mut first = true;
-    command.split_whitespace().filter(move |arg| {
-        let keep = first || looks_like_exec_path(arg);
-        first = false;
-        keep
-    })
-}
-
-fn looks_like_exec_path(token: &str) -> bool {
-    let token = token.trim_matches(|ch| matches!(ch, '"' | '\''));
-    token.contains('/')
-}
-
-fn label_from_exec_token(token: &str) -> Option<&'static str> {
-    let token = token.trim_matches(|ch| matches!(ch, '"' | '\''));
-    if token.is_empty() {
-        return None;
-    }
-
-    let lower = token.to_ascii_lowercase();
-    let basename = Path::new(&lower)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(lower.as_str());
-
-    label_from_exec_name(basename).or_else(|| label_from_known_package_path(&lower))
-}
-
-fn label_from_exec_name(name: &str) -> Option<&'static str> {
-    match name {
-        "claude" | "claude-code" => Some("claude"),
-        "codex" | "codex-cli" => Some("codex"),
-        "gemini" | "gemini-cli" => Some("gemini"),
-        "opencode" => Some("opencode"),
-        "aider" => Some("aider"),
-        "goose" => Some("goose"),
-        "openclaw" => Some("openclaw"),
-        name if name.starts_with("openclaw-") => Some("openclaw"),
-        _ => None,
-    }
-}
-
-fn label_from_known_package_path(path: &str) -> Option<&'static str> {
-    if path.contains("@anthropic-ai/claude-code") || path.contains("/claude-code/") {
-        Some("claude")
-    } else if path.contains("@openai/codex") || path.contains("/codex-linux-") {
-        Some("codex")
-    } else if path.contains("@google/gemini-cli") || path.contains("/gemini-cli/") {
-        Some("gemini")
-    } else {
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
 
     #[test]
-    fn known_agent_label_uses_executable_not_model_argument() {
-        assert_eq!(
-            known_agent_label(
-                "agentsight",
-                "agentsight top -s tokens -v all -c claude --model claude-sonnet"
-            ),
-            None
-        );
-        assert_eq!(
-            known_agent_label(
-                "python",
-                "python benchmark_runner.py --model claude-sonnet-4-5-20250929"
-            ),
-            None
-        );
-        assert_eq!(
-            known_agent_label(
-                "docker",
-                "docker run image bash -c claude --model claude-sonnet-4"
-            ),
-            None
-        );
-        assert_eq!(
-            known_agent_label("node", "node /opt/npm/bin/codex --model gpt-5"),
-            Some("codex")
-        );
-        assert_eq!(
-            known_agent_label("node", "node /home/user/.local/bin/claude"),
-            Some("claude")
-        );
-        assert_eq!(known_agent_label("claude", "claude"), Some("claude"));
-        assert_eq!(known_agent_label("openclaw-gatewa", ""), Some("openclaw"));
-    }
+    fn proc_fd_scan_finds_open_file_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("fd-evidence.txt");
+        let _file = File::create(&path).unwrap();
 
-    #[test]
-    fn process_comm_matching_uses_comm_and_executable_tokens_only() {
-        let proc_info = ProcInfo {
-            pid: 10,
-            ppid: 1,
-            session_id: 10,
-            comm: "agentsight".to_string(),
-            command: "agentsight top -c claude --model claude-sonnet".to_string(),
-            ticks: 0,
-            starttime_ticks: 0,
-            rss_kb: 0,
-            rss_mb: 0,
-            vsz_kb: 0,
-            threads: 1,
-        };
-        assert!(!process_matches_comm(&proc_info, "claude"));
-        assert!(process_matches_comm(&proc_info, "agentsight"));
+        let paths = scan_proc_fd_paths(std::process::id());
+        assert!(paths.contains(&path));
     }
 }

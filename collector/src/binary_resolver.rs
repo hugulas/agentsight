@@ -194,6 +194,15 @@ pub(crate) fn parse_container_ref(binary_path: &str) -> Option<&str> {
         .filter(|r| !r.is_empty())
 }
 
+pub(crate) fn resolve_container_binary_arg(
+    binary_path: Option<&str>,
+) -> Result<Option<String>, String> {
+    binary_path
+        .and_then(parse_container_ref)
+        .map(resolve_container_binary_path)
+        .transpose()
+}
+
 /// Resolve a Docker container reference to the explicit host path that
 /// sslsniff should attach its SSL uprobe to.
 ///

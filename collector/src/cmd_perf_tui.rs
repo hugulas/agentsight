@@ -2,16 +2,17 @@
 // Copyright (c) 2026 eunomia-bpf org.
 
 use crate::binary_extractor::BinaryExtractor;
-use crate::cmd_perf::sort_agent_rows;
-use crate::cmd_perf_live::{start_live_ebpf_capture, LiveEbpfCapture, LiveView};
-use crate::output::{draw_live_top_tui, next_view_key, AgentTopOutput, TopOptions};
+use crate::cmd_perf_live::{LiveEbpfCapture, start_live_ebpf_capture};
+use crate::output::{AgentTopOutput, TopOptions, draw_live_top_tui, next_view_key};
+use crate::view::live_top::LiveView;
+use crate::view::top::{normalize_sort_key, sort_agent_rows};
 use crossterm::{
     cursor::{Hide, Show},
     event::{self, Event as CrosstermEvent, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{Terminal, backend::CrosstermBackend};
 use std::io;
 use std::time::{Duration, Instant};
 
@@ -75,7 +76,11 @@ fn run_live_top_tui_loop(
         if force_refresh
             || (!paused && (current_top.is_none() || last_refresh.elapsed() >= interval))
         {
-            let mut top = live_view.refresh(capture, display_limit, &options)?;
+            let capture_snapshot = capture.map(LiveEbpfCapture::snapshot);
+            let mut top = live_view.refresh(capture_snapshot.as_ref(), display_limit, &options)?;
+            if let Some(note) = capture.and_then(LiveEbpfCapture::start_note) {
+                top.notes.push(note.to_string());
+            }
             sort_agent_rows(&mut top.rows, &options.sort);
             top.rows.truncate(display_limit);
             clamp_selected(&mut selected, top.rows.len());
@@ -178,19 +183,6 @@ fn clamp_selected(selected: &mut usize, rows: usize) {
         *selected = 0;
     } else if *selected >= rows {
         *selected = rows - 1;
-    }
-}
-
-fn normalize_sort_key(sort: &str) -> &'static str {
-    match sort.to_ascii_lowercase().as_str() {
-        "rss" | "mem" | "memory" => "rss",
-        "tokens" | "token" => "tokens",
-        "exec" | "execs" => "execs",
-        "fail" | "fails" | "failure" | "failures" => "fail",
-        "file" | "files" => "files",
-        "net" | "network" => "net",
-        "agent" | "name" | "command" => "agent",
-        _ => "cpu",
     }
 }
 

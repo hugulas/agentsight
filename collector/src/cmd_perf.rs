@@ -2,15 +2,16 @@
 // Copyright (c) 2026 eunomia-bpf org.
 
 use crate::cli_db::load_agentsight_view;
-use crate::output::{
-    AgentTopOutput, AgentTopRow, ResourcePeaks, StatOutput, TopOptions, TopSection, clear_screen,
-    print_agent_top, print_json, print_stat, sorted_top_counts, top_counts_from_iter,
-};
-use crate::text::short_session_id;
 use crate::model::{
     AuditCounters, ResourceSampleRow, SessionRow, Snapshot, SnapshotOptions, ViewResult,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use crate::output::{
+    AgentTopOutput, AgentTopRow, ResourcePeaks, StatOutput, TopOptions, clear_screen,
+    print_agent_top, print_json, print_stat,
+};
+use crate::text::short_session_id;
+use crate::view::top::{recent_failures, sort_agent_rows, top_sections};
+use std::collections::BTreeSet;
 use std::io::{self, Write};
 use std::time::Duration;
 
@@ -130,82 +131,6 @@ fn build_session_top<'a>(
         sections,
         failures: recent_failures(snapshot, 5),
         notes,
-    }
-}
-
-pub(crate) fn top_sections(snapshot: &Snapshot, limit: usize, view: &str) -> Vec<TopSection> {
-    let audit = &snapshot.audit_events;
-    let model_counts = snapshot
-        .token_summary
-        .iter()
-        .map(|row| (row.group.clone(), row.total_tokens))
-        .collect();
-    let all = vec![
-        (
-            "Processes",
-            "execs",
-            top_counts_from_iter(
-                audit
-                    .iter()
-                    .filter(|row| {
-                        row.audit_type == "process" && row.action.as_deref() == Some("exec")
-                    })
-                    .map(|row| {
-                        row.comm
-                            .clone()
-                            .or_else(|| row.target.clone())
-                            .unwrap_or_else(|| "unknown".to_string())
-                    }),
-                limit,
-            ),
-        ),
-        ("Files", "events", {
-            let audit_files = top_counts_from_iter(
-                audit
-                    .iter()
-                    .filter(|row| row.audit_type == "file")
-                    .filter_map(|row| row.target.clone()),
-                limit,
-            );
-            if audit_files.is_empty() {
-                files_from_sessions(snapshot, limit)
-            } else {
-                audit_files
-            }
-        }),
-        (
-            "Network",
-            "events",
-            sorted_top_counts(network_target_counts(snapshot), limit),
-        ),
-        ("Models", "tokens", sorted_top_counts(model_counts, limit)),
-        (
-            "Tools",
-            "calls",
-            top_counts_from_iter(
-                snapshot
-                    .tool_calls
-                    .iter()
-                    .filter_map(|row| row.tool_name.clone()),
-                limit,
-            ),
-        ),
-    ];
-    all.into_iter()
-        .filter(|(title, _, _)| show_section(view, title))
-        .collect()
-}
-
-fn show_section(view: &str, title: &str) -> bool {
-    let view = view.to_ascii_lowercase();
-    match view.as_str() {
-        "all" => true,
-        "process" | "processes" | "proc" => title == "Processes",
-        "file" | "files" | "fs" => title == "Files",
-        "network" | "net" => title == "Network",
-        "model" | "models" | "tokens" => matches!(title, "Models" | "Tools"),
-        "tool" | "tools" => title == "Tools",
-        _ => true,
     }
 }
 
@@ -335,67 +260,12 @@ fn saved_session_row(
     })
 }
 
-fn network_target_counts(snapshot: &Snapshot) -> BTreeMap<String, i64> {
-    let mut counts = BTreeMap::new();
-    for target in &snapshot.network_targets {
-        *counts.entry(target.host.clone()).or_default() += target.count.max(0);
-    }
-    counts
-}
-
-fn files_from_sessions(snapshot: &Snapshot, limit: usize) -> Vec<(String, i64)> {
-    let mut counts = BTreeMap::new();
-    for session in &snapshot.sessions {
-        if let Some(files) = session.attributes.get("files").and_then(|v| v.as_object()) {
-            for (path, count) in files {
-                let count = count
-                    .as_i64()
-                    .or_else(|| count.as_u64().map(|v| v as i64))
-                    .unwrap_or(1);
-                *counts.entry(path.clone()).or_insert(0i64) += count;
-            }
-        }
-    }
-    sorted_top_counts(counts, limit)
-}
-
 fn tools_for_session(snapshot: &Snapshot, session_id: &str) -> usize {
     snapshot
         .tool_calls
         .iter()
         .filter(|tool| tool.session_id.as_deref() == Some(session_id))
         .count()
-}
-
-pub(crate) fn sort_agent_rows(rows: &mut [AgentTopRow], sort: &str) {
-    let sort = sort.to_ascii_lowercase();
-    rows.sort_by(|a, b| {
-        let primary = match sort.as_str() {
-            "rss" | "mem" | "memory" => b.rss_mb.cmp(&a.rss_mb),
-            "tokens" | "token" => b
-                .tokens
-                .unwrap_or_default()
-                .cmp(&a.tokens.unwrap_or_default()),
-            "exec" | "execs" => b.execs.cmp(&a.execs),
-            "fail" | "fails" | "failure" | "failures" => b.failures.cmp(&a.failures),
-            "file" | "files" => b.files.cmp(&a.files),
-            "net" | "network" => b.network.cmp(&a.network),
-            "agent" | "name" | "command" => a.agent.cmp(&b.agent),
-            _ => b
-                .cpu_percent
-                .partial_cmp(&a.cpu_percent)
-                .unwrap_or(std::cmp::Ordering::Equal),
-        };
-        primary
-            .then_with(|| {
-                b.cpu_percent
-                    .partial_cmp(&a.cpu_percent)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .then_with(|| b.rss_mb.cmp(&a.rss_mb))
-            .then_with(|| a.agent.cmp(&b.agent))
-            .then_with(|| a.pid.cmp(&b.pid))
-    });
 }
 
 fn load_snapshot_and_resources(db: &str) -> ViewResult<(Snapshot, ResourcePeaks)> {
@@ -424,22 +294,6 @@ fn resource_peaks_from_samples(samples: &[ResourceSampleRow]) -> ResourcePeaks {
     }
 
     peaks
-}
-
-pub(crate) fn recent_failures(snapshot: &Snapshot, limit: usize) -> Vec<String> {
-    snapshot
-        .audit_events
-        .iter()
-        .rev()
-        .filter(|row| row.status.as_deref() == Some("failure"))
-        .take(limit)
-        .map(|row| {
-            row.summary
-                .clone()
-                .or_else(|| row.target.clone())
-                .unwrap_or_else(|| "failure".to_string())
-        })
-        .collect()
 }
 
 fn snapshot_age_s(snapshot: &Snapshot) -> Option<f64> {

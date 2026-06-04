@@ -33,7 +33,6 @@ mod json;
 mod model;
 mod output;
 mod runners;
-mod semantic;
 mod server;
 mod sinks;
 mod sources;

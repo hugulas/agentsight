@@ -3,8 +3,9 @@
 
 use crate::analyzers::{SSEProcessor, SSLFilter, TimestampNormalizer};
 use crate::binary_extractor::BinaryExtractor;
-use crate::binary_resolver::{parse_container_ref, resolve_container_binary_path};
+use crate::binary_resolver::resolve_container_binary_arg;
 use crate::cmd_trace::{add_http_analyzers, build_stdio_args, run_debug_runner};
+use crate::output::separator_line;
 use crate::runners::{BinaryRunner, ProcessRunner, Runner, RunnerError, SystemRunner};
 
 /// Show raw SSL events as JSON with optional chunk merging and HTTP parsing
@@ -23,17 +24,12 @@ pub(crate) async fn run_raw_ssl(
     binary_path: Option<&str>,
     args: &[String],
 ) -> Result<(), RunnerError> {
-    println!("Raw SSL Events");
-    println!("{}", "=".repeat(60));
+    println!("Raw SSL Events\n{}", separator_line());
 
     let mut ssl_runner = BinaryRunner::ssl(binary_extractor.get_sslsniff_path());
 
-    let container_resolved: Option<String> = match binary_path.and_then(parse_container_ref) {
-        Some(reference) => {
-            Some(resolve_container_binary_path(reference).map_err(RunnerError::from)?)
-        }
-        None => None,
-    };
+    let container_resolved =
+        resolve_container_binary_arg(binary_path).map_err(RunnerError::from)?;
     let binary_path = container_resolved.as_deref().or(binary_path);
 
     let mut final_args = Vec::new();
@@ -55,8 +51,12 @@ pub(crate) async fn run_raw_ssl(
     }
 
     if enable_http_parser {
-        ssl_runner =
-            add_http_analyzers(ssl_runner, include_raw_data, http_filter_patterns, disable_auth_removal);
+        ssl_runner = add_http_analyzers(
+            ssl_runner,
+            include_raw_data,
+            http_filter_patterns,
+            disable_auth_removal,
+        );
         println!(
             "Starting SSL event stream with SSE processing + HTTP parsing (press Ctrl+C to stop):"
         );
@@ -79,8 +79,7 @@ pub(crate) async fn run_raw_process(
     server_port: u16,
     args: &Vec<String>,
 ) -> Result<(), RunnerError> {
-    println!("Raw Process Events");
-    println!("{}", "=".repeat(60));
+    println!("Raw Process Events\n{}", separator_line());
 
     let mut process_runner =
         ProcessRunner::from_binary_extractor(binary_extractor.get_process_path());
@@ -90,7 +89,14 @@ pub(crate) async fn run_raw_process(
     process_runner = process_runner.add_analyzer(Box::new(TimestampNormalizer::new()));
 
     println!("Starting process event stream with raw JSON output (press Ctrl+C to stop):");
-    run_debug_runner(process_runner, quiet, enable_server, server_listen, server_port).await
+    run_debug_runner(
+        process_runner,
+        quiet,
+        enable_server,
+        server_listen,
+        server_port,
+    )
+    .await
 }
 
 /// Show raw stdio events as JSON
@@ -106,8 +112,7 @@ pub(crate) async fn run_raw_stdio(
     server_listen: &str,
     server_port: u16,
 ) -> Result<(), RunnerError> {
-    println!("Raw Stdio Events");
-    println!("{}", "=".repeat(60));
+    println!("Raw Stdio Events\n{}", separator_line());
 
     let stdio_args = build_stdio_args(pid, uid, comm, all_fds, max_bytes);
     let stdio_runner = BinaryRunner::stdio(binary_extractor.get_stdiocap_path()?)
@@ -118,7 +123,14 @@ pub(crate) async fn run_raw_stdio(
         "Starting stdio event stream for PID {} (press Ctrl+C to stop):",
         pid
     );
-    run_debug_runner(stdio_runner, quiet, enable_server, server_listen, server_port).await
+    run_debug_runner(
+        stdio_runner,
+        quiet,
+        enable_server,
+        server_listen,
+        server_port,
+    )
+    .await
 }
 
 /// Monitor system resources (CPU and memory)
@@ -134,8 +146,7 @@ pub(crate) async fn run_system(
     server_listen: &str,
     server_port: u16,
 ) -> Result<(), RunnerError> {
-    println!("System Resource Monitoring");
-    println!("{}", "=".repeat(60));
+    println!("System Resource Monitoring\n{}", separator_line());
 
     let mut system_runner = SystemRunner::new().interval(interval);
 
@@ -161,9 +172,16 @@ pub(crate) async fn run_system(
 
     println!("Interval: {}s", interval);
     println!("Include children: {}", include_children);
-    println!("{}", "=".repeat(60));
+    println!("{}", separator_line());
     println!("Starting system monitoring (press Ctrl+C to stop):");
 
     system_runner = system_runner.add_analyzer(Box::new(TimestampNormalizer::new()));
-    run_debug_runner(system_runner, quiet, enable_server, server_listen, server_port).await
+    run_debug_runner(
+        system_runner,
+        quiet,
+        enable_server,
+        server_listen,
+        server_port,
+    )
+    .await
 }

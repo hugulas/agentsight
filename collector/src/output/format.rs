@@ -8,8 +8,8 @@ use std::path::Path;
 
 use crate::analyzers::common;
 use crate::event::Event;
-use crate::text::truncate_with_ellipsis as truncate;
 use crate::model::{AuditEventRow, LlmCallRow, TokenSummary};
+use crate::text::truncate_with_ellipsis as truncate;
 
 #[derive(Debug, Default, Serialize)]
 pub(crate) struct ResourcePeaks {
@@ -125,6 +125,7 @@ pub(crate) struct TopEvidence {
     pub(crate) proc: bool,
     pub(crate) proc_fd: bool,
     pub(crate) sticky: bool,
+    pub(crate) cwd_recent: bool,
     pub(crate) ebpf: bool,
     pub(crate) ebpf_file: bool,
     pub(crate) db: bool,
@@ -145,6 +146,10 @@ impl TopEvidence {
                 "sticky" => {
                     evidence.proc = true;
                     evidence.sticky = true;
+                }
+                "cwd_recent" => {
+                    evidence.proc = true;
+                    evidence.cwd_recent = true;
                 }
                 "ebpf" => evidence.ebpf = true,
                 "ebpf_file" => {
@@ -277,6 +282,9 @@ impl AgentTopRow {
         if evidence.sticky {
             parts.push("linked");
         }
+        if evidence.cwd_recent {
+            parts.push("cwd");
+        }
         if evidence.ebpf_file {
             parts.push("eBPF:file");
         } else if evidence.ebpf {
@@ -380,9 +388,12 @@ pub(crate) fn clear_screen() {
     print!("\x1b[2J\x1b[H");
 }
 
+pub(crate) fn separator_line() -> &'static str {
+    "============================================================"
+}
+
 pub(crate) fn print_trace_header() {
-    println!("Trace Monitoring");
-    println!("{}", "=".repeat(60));
+    println!("Trace Monitoring\n{}", separator_line());
 }
 
 pub(crate) fn print_trace_ssl_binary_discovered(comm: &str, path: &str) {
@@ -394,7 +405,7 @@ pub(crate) fn print_trace_container_binary_resolved(reference: &str, path: &str)
 }
 
 pub(crate) fn print_trace_start(runners: usize, analyzers: usize) {
-    println!("{}", "=".repeat(60));
+    println!("{}", separator_line());
     println!(
         "Starting flexible trace monitoring with {runners} runners and {analyzers} global analyzers..."
     );
@@ -414,8 +425,7 @@ pub(crate) fn print_web_server_error(error: impl std::fmt::Display) {
 }
 
 pub(crate) fn print_record_header() {
-    println!("AgentSight record");
-    println!("{}", "=".repeat(60));
+    println!("AgentSight record\n{}", separator_line());
 }
 
 pub(crate) fn print_record_session_db_error(error: impl std::fmt::Display) {
@@ -452,7 +462,7 @@ pub(crate) fn print_record_web_ui(url: &str) {
 
 pub(crate) fn print_record_launch(command: &[String]) {
     println!("▶ Launching: {}", command.join(" "));
-    println!("{}", "=".repeat(60));
+    println!("{}", separator_line());
 }
 
 pub(crate) fn print_record_monitoring_stream_ended() {
@@ -462,7 +472,7 @@ pub(crate) fn print_record_monitoring_stream_ended() {
 pub(crate) fn print_record_target_exited(status: impl std::fmt::Display) {
     println!(
         "\n{}\n✓ Target exited ({}). Stopping monitoring.",
-        "=".repeat(60),
+        separator_line(),
         status
     );
 }

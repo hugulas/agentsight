@@ -1,7 +1,18 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
+mod canonical;
+pub(crate) mod live_top;
+pub(crate) mod llm;
+pub(crate) mod process_select;
 mod projection;
+pub(crate) mod session_process_match;
+pub(crate) mod top;
+
+pub(crate) use canonical::{CanonicalEvent, EventKind, normalize_event};
+pub(crate) use llm::{
+    body_json, extract_model, extract_token_usage, extract_token_usage_from_sse, provider_from_host,
+};
 
 use crate::model::{
     AGENT_NATIVE_SOURCE, AuditEventRow, LlmCallRow, NetworkTargetRow, ProcessNodeRow,
@@ -76,38 +87,6 @@ impl MaterializedView {
         self.source = source.into();
     }
 
-    pub(crate) fn load_llm_call(&mut self, row: LlmCallRow) {
-        self.apply_llm_call(&row);
-    }
-
-    pub(crate) fn load_token_usage(&mut self, row: TokenUsageRow) {
-        self.apply_token_usage(&row);
-    }
-
-    pub(crate) fn load_audit_event(&mut self, row: AuditEventRow) {
-        self.apply_audit_event(&row);
-    }
-
-    pub(crate) fn load_process_node(&mut self, row: ProcessNodeRow) {
-        self.upsert_process_node(&row);
-    }
-
-    pub(crate) fn load_tool_call(&mut self, row: ToolCallRow) {
-        self.apply_tool_call(&row);
-    }
-
-    pub(crate) fn load_session(&mut self, row: SessionRow) {
-        self.upsert_session(&row);
-    }
-
-    pub(crate) fn load_network_target(&mut self, row: NetworkTargetRow) {
-        self.upsert_network_target(&row);
-    }
-
-    pub(crate) fn load_resource_sample(&mut self, row: ResourceSampleRow) {
-        self.apply_resource_sample(&row);
-    }
-
     pub(crate) fn emit_llm_call(&mut self, row: LlmCallRow) -> ViewResult<()> {
         self.apply_llm_call(&row);
         self.publish(|sink| sink.llm_call(&row))
@@ -162,27 +141,27 @@ impl MaterializedView {
 }
 
 impl MaterializedView {
-    fn apply_llm_call(&mut self, row: &LlmCallRow) {
+    pub(crate) fn apply_llm_call(&mut self, row: &LlmCallRow) {
         self.llm_calls.insert(row.id.clone(), row.clone());
     }
 
-    fn apply_token_usage(&mut self, row: &TokenUsageRow) {
+    pub(crate) fn apply_token_usage(&mut self, row: &TokenUsageRow) {
         self.token_usage.insert(row.id.clone(), row.clone());
     }
 
-    fn apply_audit_event(&mut self, row: &AuditEventRow) {
+    pub(crate) fn apply_audit_event(&mut self, row: &AuditEventRow) {
         self.audit_events.insert(row.id.clone(), row.clone());
     }
 
-    fn apply_tool_call(&mut self, row: &ToolCallRow) {
+    pub(crate) fn apply_tool_call(&mut self, row: &ToolCallRow) {
         self.tool_calls.insert(row.id.clone(), row.clone());
     }
 
-    fn apply_resource_sample(&mut self, row: &ResourceSampleRow) {
+    pub(crate) fn apply_resource_sample(&mut self, row: &ResourceSampleRow) {
         self.resource_samples.push(row.clone());
     }
 
-    fn upsert_session(&mut self, row: &SessionRow) {
+    pub(crate) fn upsert_session(&mut self, row: &SessionRow) {
         let Some(existing) = self.sessions.get_mut(&row.id) else {
             self.sessions.insert(row.id.clone(), row.clone());
             return;
@@ -200,7 +179,7 @@ impl MaterializedView {
         existing.confidence = max_optional(existing.confidence, row.confidence);
     }
 
-    fn upsert_network_target(&mut self, row: &NetworkTargetRow) {
+    pub(crate) fn upsert_network_target(&mut self, row: &NetworkTargetRow) {
         let key = network_target_key(row);
         let Some(existing) = self.network_targets.get_mut(&key) else {
             self.network_targets.insert(key, row.clone());
@@ -215,7 +194,7 @@ impl MaterializedView {
             max_optional(existing.last_timestamp_ms, row.last_timestamp_ms);
     }
 
-    fn upsert_process_node(&mut self, row: &ProcessNodeRow) {
+    pub(crate) fn upsert_process_node(&mut self, row: &ProcessNodeRow) {
         let Some(existing) = self.process_nodes.get_mut(&row.id) else {
             self.process_nodes.insert(row.id.clone(), row.clone());
             return;

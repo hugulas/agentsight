@@ -39,6 +39,16 @@ pub(crate) fn target_user_ids() -> Option<(libc::uid_t, libc::gid_t)> {
     Some((uid, gid))
 }
 
+pub(crate) fn sudo_cached() -> bool {
+    std::process::Command::new("sudo")
+        .args(["-n", "true"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
 pub(crate) fn default_session_db_path() -> Result<String, RunnerError> {
     let dir = sessions_dir()
         .ok_or_else(|| RunnerError::from("cannot determine home directory for session DB"))?;
@@ -117,27 +127,18 @@ pub(crate) async fn run_exec(
     // When not running as root, warm the sudo credential cache so the
     // user is prompted once (with a visible terminal) before eBPF binaries
     // are spawned with piped stdio.  Skip if passwordless sudo already works.
-    if unsafe { libc::geteuid() } != 0 {
-        let has_cached = std::process::Command::new("sudo")
-            .args(["-n", "true"])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+    if unsafe { libc::geteuid() } != 0 && !sudo_cached() {
+        print_record_sudo_prompt();
+        let ok = std::process::Command::new("sudo")
+            .arg("true")
             .status()
             .map(|s| s.success())
             .unwrap_or(false);
-        if !has_cached {
-            print_record_sudo_prompt();
-            let ok = std::process::Command::new("sudo")
-                .arg("true")
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
-            if !ok {
-                return Err(RunnerError::from(
-                    "sudo authentication failed. Either run as root (`sudo -E agentsight record -- ...`) \
-                     or grant your user passwordless sudo for the eBPF binaries.",
-                ));
-            }
+        if !ok {
+            return Err(RunnerError::from(
+                "sudo authentication failed. Either run as root (`sudo -E agentsight record -- ...`) \
+                 or grant your user passwordless sudo for the eBPF binaries.",
+            ));
         }
     }
 

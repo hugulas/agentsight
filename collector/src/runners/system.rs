@@ -5,6 +5,7 @@ use super::{EventStream, Runner, RunnerError};
 use crate::analyzers::Analyzer;
 use crate::event::Event;
 use crate::sources::proc::ProcSnapshot;
+use crate::view::process_select;
 use async_trait::async_trait;
 use futures::stream::Stream;
 use serde_json::json;
@@ -228,7 +229,7 @@ fn find_target_pids(config: &SystemConfig, snapshot: &ProcSnapshot) -> Vec<u32> 
         }
     } else if let Some(ref comm_pattern) = config.comm {
         // Find PIDs by process name
-        snapshot.pids_matching_comm(comm_pattern)
+        process_select::pids_matching_comm(snapshot, comm_pattern)
     } else {
         // No specific target - caller should handle system-wide monitoring
         vec![]

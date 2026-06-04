@@ -9,7 +9,7 @@ use crate::analyzers::{
 };
 use crate::binary_extractor::BinaryExtractor;
 use crate::binary_resolver::{
-    binary_embeds_ssl, parse_container_ref, resolve_binary_path, resolve_container_binary_path,
+    binary_embeds_ssl, parse_container_ref, resolve_binary_path, resolve_container_binary_arg,
 };
 use crate::output::{
     print_event_json, print_trace_container_binary_resolved, print_trace_header,
@@ -21,9 +21,9 @@ use crate::runners::{
 };
 use crate::server::WebServer;
 use crate::sinks::OtelExporter;
-use crate::sources::proc::{PidSeed, ProcSnapshot};
 use crate::sinks::sqlite::SqliteStore;
-use crate::view::{MaterializedView, SharedMaterializedView};
+use crate::sources::proc::{PidSeed, ProcSnapshot};
+use crate::view::{MaterializedView, SharedMaterializedView, process_select};
 
 pub(crate) const DEFAULT_SERVER_LISTEN: &str = "127.0.0.1";
 pub(crate) const DEFAULT_RECORD_STDIO_MAX_BYTES: u32 = 65_536;
@@ -115,17 +115,13 @@ pub(crate) fn prepare_process_seeds(cfg: &mut TraceConfig) -> Result<(), RunnerE
 
     let snapshot = ProcSnapshot::collect()
         .map_err(|e| RunnerError::from(format!("failed to collect /proc snapshot: {}", e)))?;
-    cfg.process_seed_pids = if let Some(session_id) = cfg.session_id {
-        snapshot.seeds_for_session(session_id)
-    } else if let Some(pid) = cfg.pid {
-        snapshot.seeds_for_pid_family(pid)
-    } else if let Some(comm) = cfg.comm.as_deref() {
-        snapshot.seeds_for_comm(comm)
-    } else if cfg.mode.unwrap_or(1) == 1 {
-        snapshot.seeds_for_all()
-    } else {
-        Vec::new()
-    };
+    cfg.process_seed_pids = process_select::process_seeds(
+        &snapshot,
+        cfg.session_id,
+        cfg.pid,
+        cfg.comm.as_deref(),
+        cfg.mode.unwrap_or(1) == 1,
+    );
     Ok(())
 }
 
@@ -220,8 +216,7 @@ pub(crate) fn build_trace_agent_with_view(
     if stdio_enabled {
         let pid_filter =
             pid.ok_or_else(|| RunnerError::from("stdio capture currently requires --pid"))?;
-        let mut stdio_runner =
-            BinaryRunner::stdio(binary_extractor.get_stdiocap_path()?);
+        let mut stdio_runner = BinaryRunner::stdio(binary_extractor.get_stdiocap_path()?);
         let mut stdio_args = build_stdio_args(
             pid_filter,
             stdio_uid,
@@ -334,13 +329,10 @@ pub(crate) async fn run_trace(
     // is translated in Rust to an explicit host-side SSL attach target. The C
     // sslsniff binary only consumes that path; it does not scan container
     // process maps itself.
-    if let Some(reference) = cfg
-        .binary_path
-        .as_deref()
-        .and_then(parse_container_ref)
-        .map(str::to_string)
-    {
-        let resolved = resolve_container_binary_path(&reference).map_err(RunnerError::from)?;
+    if let Some(reference) = cfg.binary_path.as_deref().and_then(parse_container_ref) {
+        let resolved = resolve_container_binary_arg(cfg.binary_path.as_deref())
+            .map_err(RunnerError::from)?
+            .expect("container reference resolves to a binary path");
         print_trace_container_binary_resolved(&reference, &resolved);
         cfg.binary_path = Some(resolved);
     }
