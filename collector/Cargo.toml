@@ -18,7 +18,6 @@ include = [
     "build.rs",
     "src/**",
     "tests/**",
-    "adapters/**",
     "vendor/bpf/process",
     "vendor/bpf/sslsniff",
     "vendor/bpf/stdiocap",

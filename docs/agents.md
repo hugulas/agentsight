@@ -10,7 +10,7 @@ For general usage and the `record` command, see the [README](https://github.com/
 ./agentsight discover
 ```
 
-Lists agents installed on the local machine. Built-in SQL adapters cover Anthropic, Claude Code, Gemini CLI, and OpenClaw sessions. Use `--no-adapters` to disable, or `agentsight db adapters list --json` to inspect.
+Lists supported agent installs and local session locations on the machine. Agent-specific session logs are read through local sources and materialized into the same view schema used by recorded traces.
 
 ## Zero-Config: `record`
 

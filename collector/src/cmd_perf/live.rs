@@ -177,6 +177,7 @@ struct LiveView {
     previous: Option<LiveSample>,
     bindings: LiveSessionBindings,
     session_cache: local_sessions::SessionCache,
+    fd_cache: HashMap<(u32, u64), BTreeSet<PathBuf>>,
 }
 
 impl Default for LiveView {
@@ -185,6 +186,7 @@ impl Default for LiveView {
             previous: None,
             bindings: LiveSessionBindings::default(),
             session_cache: local_sessions::SessionCache::new(),
+            fd_cache: HashMap::new(),
         }
     }
 }
@@ -198,11 +200,8 @@ impl LiveView {
     ) -> io::Result<AgentTopOutput<'static>> {
         let sample = LiveSample::collect()?;
         let capture_snapshot = capture.map(LiveEbpfCapture::snapshot);
-        let local_sessions = discover_local_top_sessions(&mut self.session_cache, options, limit);
-        let session_view = local_sessions::materialized_view(&local_sessions);
-        let session_snapshot = session_view.export_snapshot(SnapshotOptions {
-            audit_limit: 10_000,
-        });
+        let (local_sessions, session_snapshot) =
+            self.session_cache.discover_with_snapshot(options, limit);
         let mut top = self.build_top(
             &sample,
             capture_snapshot.as_ref(),
@@ -225,9 +224,11 @@ impl LiveView {
         session_snapshot: &Snapshot,
         options: &TopOptions,
     ) -> AgentTopOutput<'a> {
-        let mut live_rows = live_process_rows(sample, self.previous.as_ref(), options);
+        let children = sample.children_by_ppid();
+        let mut live_rows = live_process_rows(sample, self.previous.as_ref(), options, &children);
         sort_agent_rows(&mut live_rows, "cpu");
-        let path_evidence = collect_live_session_path_evidence(&live_rows, sample, capture);
+        let path_evidence =
+            collect_live_session_path_evidence(&live_rows, sample, capture, &children, &mut self.fd_cache);
         self.bindings.retain_live(&live_rows, sample);
         let mut used_live_pids = HashSet::new();
         let mut rows = Vec::new();
@@ -309,7 +310,7 @@ impl LiveView {
                 .unwrap_or(true)
         }));
         if let Some(capture) = capture {
-            apply_live_capture(&mut rows, sample, capture);
+            apply_live_capture(&mut rows, sample, capture, &children);
         }
 
         let local_summary = &session_snapshot.summary;
@@ -807,19 +808,31 @@ fn collect_live_session_path_evidence(
     live_rows: &[AgentTopRow],
     sample: &LiveSample,
     capture: Option<&LiveCaptureSnapshot>,
+    children: &HashMap<u32, Vec<u32>>,
+    fd_cache: &mut HashMap<(u32, u64), BTreeSet<PathBuf>>,
 ) -> HashMap<u32, BTreeMap<PathBuf, &'static str>> {
-    let children = sample.children_by_ppid();
     let mut out = HashMap::new();
+    let mut live_keys = HashSet::new();
 
     for row in live_rows {
         let Some(root_pid) = row.pid else {
             continue;
         };
-        let family = procfs::process_family(root_pid, &children, &sample.procs);
+        let family = procfs::process_family(root_pid, children, &sample.procs);
         let mut evidence = BTreeMap::new();
         for pid in family {
-            for path in scan_proc_fd_session_paths(pid) {
-                evidence.entry(path).or_insert(TRACE_PROC_FD);
+            let starttime = sample
+                .procs
+                .get(&pid)
+                .map(|p| p.starttime_ticks)
+                .unwrap_or(0);
+            let key = (pid, starttime);
+            live_keys.insert(key);
+            let paths = fd_cache
+                .entry(key)
+                .or_insert_with(|| scan_proc_fd_session_paths(pid));
+            for path in paths.iter() {
+                evidence.entry(path.clone()).or_insert(TRACE_PROC_FD);
             }
             if let Some(capture) = capture
                 && let Some(paths) = capture.session_paths_by_pid.get(&pid)
@@ -834,6 +847,7 @@ fn collect_live_session_path_evidence(
         }
     }
 
+    fd_cache.retain(|key, _| live_keys.contains(key));
     out
 }
 
@@ -842,7 +856,6 @@ fn scan_proc_fd_session_paths(pid: u32) -> BTreeSet<PathBuf> {
     let Ok(entries) = fs::read_dir(format!("/proc/{pid}/fd")) else {
         return out;
     };
-
     for entry in entries.flatten() {
         let Ok(target) = fs::read_link(entry.path()) else {
             continue;
@@ -851,7 +864,6 @@ fn scan_proc_fd_session_paths(pid: u32) -> BTreeSet<PathBuf> {
             out.insert(path);
         }
     }
-
     out
 }
 
@@ -859,18 +871,18 @@ fn apply_live_capture(
     rows: &mut [AgentTopRow],
     sample: &LiveSample,
     capture: &LiveCaptureSnapshot,
+    children: &HashMap<u32, Vec<u32>>,
 ) {
     if capture.by_pid.is_empty() {
         return;
     }
 
-    let children = sample.children_by_ppid();
     let mut attributed = HashSet::new();
     for row in rows.iter_mut() {
         let Some(root_pid) = row.pid else {
             continue;
         };
-        let family = procfs::process_family(root_pid, &children, &sample.procs);
+        let family = procfs::process_family(root_pid, children, &sample.procs);
         let mut counters = CaptureCounters::default();
         for pid in family {
             if let Some(pid_counters) = capture.by_pid.get(&pid) {
@@ -907,13 +919,13 @@ fn live_process_rows(
     sample: &LiveSample,
     previous: Option<&LiveSample>,
     options: &TopOptions,
+    children: &HashMap<u32, Vec<u32>>,
 ) -> Vec<AgentTopRow> {
     let roots = live_roots(sample, options);
-    let children = sample.children_by_ppid();
     let mut rows = Vec::new();
 
     for root_pid in roots {
-        let family = procfs::process_family(root_pid, &children, &sample.procs);
+        let family = procfs::process_family(root_pid, children, &sample.procs);
         if family.is_empty() {
             continue;
         }
@@ -1010,19 +1022,6 @@ fn live_matching_ancestor(proc_info: &ProcInfo, sample: &LiveSample, options: &T
     false
 }
 
-fn discover_local_top_sessions(
-    cache: &mut local_sessions::SessionCache,
-    options: &TopOptions,
-    limit: usize,
-) -> Vec<LocalSession> {
-    cache
-        .discover(limit)
-        .into_iter()
-        .filter(|session| {
-            local_sessions::matches_filter(session, options.pid, options.comm.as_deref())
-        })
-        .collect()
-}
 
 #[cfg(test)]
 mod tests {

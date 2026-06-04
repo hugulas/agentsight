@@ -122,7 +122,7 @@ This logic is in `build_trace_agent()` in `collector/src/cmd_trace.rs`.
 ## CLI Subcommands
 
 - **`top`** — Primary live view. Run as `sudo ./agentsight top`; it loads eBPF probes and also reads agent-native local logs when present.
-- **`record`** — Optimized recording. Use `sudo ./agentsight record -- <command>` to launch and trace a command, or `sudo ./agentsight record -c <comm>` / `-p <pid>` to attach. It enables SSL, process, stdio when applicable, system monitoring, local SQLite storage, adapters, and the web UI by default.
+- **`record`** — Optimized recording. Use `sudo ./agentsight record -- <command>` to launch and trace a command, or `sudo ./agentsight record -c <comm>` / `-p <pid>` to attach. It enables SSL, process, stdio when applicable, system monitoring, materialized view sinks, and the web UI by default.
 - **`stat`** — Query the latest saved session, or run `sudo ./agentsight stat -- <command>` and print counters when the command exits.
 - **`report` / `prompts` / `list` / `db`** — Query saved local SQLite sessions; these usually do not need sudo.
 - **`debug trace`** — Most flexible live capture. Toggle `--ssl`, `--process`, `--stdio`, `--system`, and `--server` independently. Supports `--ssl-filter`, `--http-filter`, `--binary-path`, and `--otel`.

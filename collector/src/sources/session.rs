@@ -13,6 +13,9 @@ use crate::view::types::{SessionRow, Snapshot, SnapshotOptions, TokenUsageRow, V
 
 pub(crate) struct SessionCache {
     entries: HashMap<PathBuf, CacheEntry>,
+    cached_sessions: Vec<LocalSession>,
+    cached_snapshot: Option<Snapshot>,
+    dirty: bool,
 }
 
 struct CacheEntry {
@@ -24,10 +27,36 @@ impl SessionCache {
     pub(crate) fn new() -> Self {
         Self {
             entries: HashMap::new(),
+            cached_sessions: Vec::new(),
+            cached_snapshot: None,
+            dirty: true,
         }
     }
 
-    pub(crate) fn discover(&mut self, limit: usize) -> Vec<LocalSession> {
+    pub(crate) fn discover_with_snapshot(
+        &mut self,
+        options: &crate::output::TopOptions,
+        limit: usize,
+    ) -> (Vec<LocalSession>, Snapshot) {
+        self.refresh(limit);
+        let filtered: Vec<LocalSession> = self
+            .cached_sessions
+            .iter()
+            .filter(|s| matches_filter(s, options.pid, options.comm.as_deref()))
+            .cloned()
+            .collect();
+        let snapshot = if self.dirty || self.cached_snapshot.is_none() {
+            let snap = materialized_snapshot(&filtered);
+            self.cached_snapshot = Some(snap.clone());
+            self.dirty = false;
+            snap
+        } else {
+            self.cached_snapshot.clone().unwrap()
+        };
+        (filtered, snapshot)
+    }
+
+    fn refresh(&mut self, limit: usize) {
         let mut candidates: Vec<(SystemTime, &str, PathBuf)> = Vec::new();
         for (agent, dir) in local_session_dirs() {
             walk_jsonl(&dir, &mut |path, meta| {
@@ -52,6 +81,7 @@ impl SessionCache {
             let session = match self.entries.get(&path) {
                 Some(entry) if entry.mtime == mtime => entry.session.clone(),
                 _ => {
+                    self.dirty = true;
                     let parsed = read_session_path_with_source(agent, &path, mtime);
                     self.entries.insert(
                         path.clone(),
@@ -73,8 +103,12 @@ impl SessionCache {
             }
         }
 
+        let before = self.entries.len();
         self.entries.retain(|path, _| live_paths.contains(path));
-        sessions
+        if self.entries.len() != before {
+            self.dirty = true;
+        }
+        self.cached_sessions = sessions;
     }
 }
 
