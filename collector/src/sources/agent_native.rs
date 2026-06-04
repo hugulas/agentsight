@@ -181,6 +181,7 @@ fn session_row(session: &LocalSession) -> SessionRow {
             "prompt_preview": session.prompt_preview.clone(),
             "cwd": session.cwd.clone(),
             "last_message_at": session.last_message_at.clone(),
+            "files": session.files,
         }),
     }
 }

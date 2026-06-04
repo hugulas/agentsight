@@ -288,6 +288,29 @@ impl LiveView {
                         .and_then(|(row, _)| row.pid)
                         .and_then(proc_cwd)
                 });
+            let tool_breakdown = {
+                let mut counts = BTreeMap::new();
+                for tool in session_snapshot.tool_calls.iter().filter(|t| {
+                    t.session_id.as_deref() == Some(session.id.as_str())
+                }) {
+                    if let Some(name) = &tool.tool_name {
+                        *counts.entry(name.clone()).or_insert(0i64) += 1;
+                    }
+                }
+                crate::output::sorted_top_counts(counts, 10)
+            };
+            let file_breakdown = session
+                .attributes
+                .get("files")
+                .and_then(|v| v.as_object())
+                .map(|m| {
+                    let counts: BTreeMap<String, i64> = m
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.as_i64().unwrap_or(1)))
+                        .collect();
+                    crate::output::sorted_top_counts(counts, 10)
+                })
+                .unwrap_or_default();
             rows.push(AgentTopRow {
                 session: session_attr(session, "display_id")
                     .unwrap_or(session.id.as_str())
@@ -309,7 +332,12 @@ impl LiveView {
                 tools,
                 execs: 0,
                 failures: 0,
-                files: 0,
+                files: session
+                    .attributes
+                    .get("files")
+                    .and_then(|v| v.as_object())
+                    .map(|m| m.len())
+                    .unwrap_or(0),
                 network: 0,
                 unattributed: 0,
                 trace,
@@ -317,6 +345,8 @@ impl LiveView {
                 workspace,
                 last_message_at: session_attr(session, "last_message_at")
                     .map(ToString::to_string),
+                tool_breakdown,
+                file_breakdown,
             });
         }
 
@@ -441,8 +471,24 @@ impl LiveView {
             }
         }
 
-        let sections =
+        let mut sections =
             super::top_sections(session_snapshot, rows.len().max(10), &options.view);
+        if !sections.iter().any(|(t, _, items)| *t == "Processes" && !items.is_empty()) {
+            let proc_counts: Vec<_> = {
+                let mut counts = BTreeMap::new();
+                for row in &rows {
+                    *counts.entry(row.agent.clone()).or_insert(0i64) +=
+                        row.processes.max(1) as i64;
+                }
+                let mut sorted: Vec<_> = counts.into_iter().collect();
+                sorted.sort_by(|a, b| b.1.cmp(&a.1));
+                sorted
+            };
+            if !proc_counts.is_empty() {
+                sections.retain(|(t, _, _)| *t != "Processes");
+                sections.insert(0, ("Processes", "tree", proc_counts));
+            }
+        }
         let failures = super::recent_failures(session_snapshot, 5);
 
         AgentTopOutput {
@@ -1062,6 +1108,8 @@ fn live_process_rows(
                 .unwrap_or_else(|| "unknown".to_string()),
             workspace: proc_cwd(root_pid),
             last_message_at: None,
+            tool_breakdown: Vec::new(),
+            file_breakdown: Vec::new(),
         });
     }
 
@@ -1255,6 +1303,8 @@ mod tests {
             command: "claude".to_string(),
             workspace: None,
             last_message_at: None,
+            tool_breakdown: Vec::new(),
+            file_breakdown: Vec::new(),
         };
         let sample = test_live_sample(1, 10);
         let mut bindings = LiveSessionBindings::default();
@@ -1344,6 +1394,8 @@ mod tests {
                 command: "codex".to_string(),
                 workspace: None,
                 last_message_at: None,
+                tool_breakdown: Vec::new(),
+                file_breakdown: Vec::new(),
             }],
             sections: Vec::new(),
             failures: Vec::new(),

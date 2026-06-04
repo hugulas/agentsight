@@ -358,6 +358,17 @@ fn session_detail_lines(
         row.model_label(),
         row.trace,
     );
+    let tools = if !row.tool_breakdown.is_empty() {
+        &row.tool_breakdown
+    } else {
+        find_section(&top.sections, "Tools").map(|v| v.as_slice()).unwrap_or(&[])
+    };
+    let files = if !row.file_breakdown.is_empty() {
+        &row.file_breakdown
+    } else {
+        find_section(&top.sections, "Files").map(|v| v.as_slice()).unwrap_or(&[])
+    };
+
     match view.as_str() {
         "processes" => {
             let mut lines = vec![
@@ -382,8 +393,8 @@ fn session_detail_lines(
             if let Some(items) = find_section(&top.sections, "Processes") {
                 lines.push(detail_line("top execs", format_top_items(items, 8)));
             }
-            if let Some(items) = find_section(&top.sections, "Tools") {
-                lines.push(detail_line("top tools", format_top_items(items, 6)));
+            if !tools.is_empty() {
+                lines.push(detail_line("top tools", format_top_items(tools, 6)));
             }
             lines
         }
@@ -395,26 +406,18 @@ fn session_detail_lines(
                     row.workspace.as_deref().unwrap_or("-").to_string(),
                 ),
             ];
-            if let Some(items) = find_section(&top.sections, "Files") {
-                let dirs = aggregate_to_dirs(items);
-                lines.push(detail_line("top dirs", format_top_items(&dirs, 6)));
-                let recent: Vec<_> = items
-                    .iter()
-                    .take(5)
-                    .map(|(name, count)| {
-                        let basename = name.rsplit('/').next().unwrap_or(name);
-                        format!("{basename}({count})")
-                    })
-                    .collect();
-                lines.push(detail_line("top files", recent.join("  ")));
+            if !files.is_empty() {
+                let dirs = aggregate_to_dirs(files);
+                lines.push(detail_line("top dirs", format_top_paths(&dirs, 5)));
+                lines.push(detail_line("top files", format_top_paths(files, 5)));
             } else {
                 lines.push(detail_line(
                     "files",
-                    format!("{} events (use `record` for file-level detail)", row.files),
+                    format!("{} unique (use `record` for file-level detail)", row.files),
                 ));
             }
-            if let Some(items) = find_section(&top.sections, "Tools") {
-                lines.push(detail_line("top tools", format_top_items(items, 6)));
+            if !tools.is_empty() {
+                lines.push(detail_line("top tools", format_top_items(tools, 6)));
             }
             lines
         }
@@ -453,8 +456,8 @@ fn session_detail_lines(
             if let Some(items) = find_section(&top.sections, "Models") {
                 lines.push(detail_line("models", format_top_items(items, 5)));
             }
-            if let Some(items) = find_section(&top.sections, "Tools") {
-                lines.push(detail_line("top tools", format_top_items(items, 6)));
+            if !tools.is_empty() {
+                lines.push(detail_line("top tools", format_top_items(tools, 6)));
             }
             lines
         }
@@ -483,11 +486,11 @@ fn session_detail_lines(
                     ),
                 ),
             ];
-            if let Some(items) = find_section(&top.sections, "Tools") {
-                lines.push(detail_line("top tools", format_top_items(items, 6)));
+            if !tools.is_empty() {
+                lines.push(detail_line("top tools", format_top_items(tools, 6)));
             }
-            if let Some(items) = find_section(&top.sections, "Models") {
-                lines.push(detail_line("models", format_top_items(items, 5)));
+            if !files.is_empty() {
+                lines.push(detail_line("top files", format_top_paths(files, 5)));
             }
             lines
         }
@@ -506,11 +509,25 @@ fn find_section<'a>(
 }
 
 fn format_top_items(items: &[(String, i64)], limit: usize) -> String {
+    format_top_items_with(items, limit, |name| {
+        crate::text::truncate_with_ellipsis(name, 28)
+    })
+}
+
+fn format_top_paths(items: &[(String, i64)], limit: usize) -> String {
+    format_top_items_with(items, limit, |name| truncate_path(name, 32))
+}
+
+fn format_top_items_with(
+    items: &[(String, i64)],
+    limit: usize,
+    shorten: impl Fn(&str) -> String,
+) -> String {
     let parts: Vec<_> = items
         .iter()
         .take(limit)
         .map(|(name, count)| {
-            let short = crate::text::truncate_with_ellipsis(name, 28);
+            let short = shorten(name);
             format!("{short}({count})")
         })
         .collect();
@@ -518,6 +535,28 @@ fn format_top_items(items: &[(String, i64)], limit: usize) -> String {
         "-".to_string()
     } else {
         parts.join("  ")
+    }
+}
+
+fn truncate_path(path: &str, max: usize) -> String {
+    if path.len() <= max {
+        return path.to_string();
+    }
+    let mut components: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    if components.len() <= 2 {
+        return format!("...{}", &path[path.len().saturating_sub(max - 3)..]);
+    }
+    let tail = components.split_off(components.len().saturating_sub(2));
+    let suffix = tail.join("/");
+    if suffix.len() + 4 >= max {
+        return format!(".../{suffix}");
+    }
+    let budget = max - suffix.len() - 4;
+    let head = components.first().copied().unwrap_or("");
+    if head.len() <= budget {
+        format!("{head}/.../{suffix}")
+    } else {
+        format!(".../{suffix}")
     }
 }
 

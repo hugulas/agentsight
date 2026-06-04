@@ -165,13 +165,20 @@ pub(crate) fn top_sections(snapshot: &Snapshot, limit: usize, view: &str) -> Vec
         (
             "Files",
             "events",
-            top_counts_from_iter(
-                audit
-                    .iter()
-                    .filter(|row| row.audit_type == "file")
-                    .filter_map(|row| row.target.clone()),
-                limit,
-            ),
+            {
+                let audit_files = top_counts_from_iter(
+                    audit
+                        .iter()
+                        .filter(|row| row.audit_type == "file")
+                        .filter_map(|row| row.target.clone()),
+                    limit,
+                );
+                if audit_files.is_empty() {
+                    files_from_sessions(snapshot, limit)
+                } else {
+                    audit_files
+                }
+            },
         ),
         (
             "Network",
@@ -253,6 +260,8 @@ fn session_agent_rows(
                 command: session.agent_type.clone(),
                 workspace: cwd,
                 last_message_at: last_msg,
+                tool_breakdown: Vec::new(),
+                file_breakdown: Vec::new(),
             }
         })
         .collect::<Vec<_>>();
@@ -328,6 +337,8 @@ fn saved_session_row(
         command: "saved session".to_string(),
         workspace: None,
         last_message_at: None,
+        tool_breakdown: Vec::new(),
+        file_breakdown: Vec::new(),
     })
 }
 
@@ -337,6 +348,19 @@ fn network_target_counts(snapshot: &Snapshot) -> BTreeMap<String, i64> {
         *counts.entry(target.host.clone()).or_default() += target.count.max(0);
     }
     counts
+}
+
+fn files_from_sessions(snapshot: &Snapshot, limit: usize) -> Vec<(String, i64)> {
+    let mut counts = BTreeMap::new();
+    for session in &snapshot.sessions {
+        if let Some(files) = session.attributes.get("files").and_then(|v| v.as_object()) {
+            for (path, count) in files {
+                let count = count.as_i64().or_else(|| count.as_u64().map(|v| v as i64)).unwrap_or(1);
+                *counts.entry(path.clone()).or_insert(0i64) += count;
+            }
+        }
+    }
+    sorted_top_counts(counts, limit)
 }
 
 fn tools_for_session(snapshot: &Snapshot, session_id: &str) -> usize {

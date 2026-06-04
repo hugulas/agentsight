@@ -114,6 +114,8 @@ pub(crate) struct AgentTopRow {
     pub(crate) command: String,
     pub(crate) workspace: Option<String>,
     pub(crate) last_message_at: Option<String>,
+    pub(crate) tool_breakdown: Vec<(String, i64)>,
+    pub(crate) file_breakdown: Vec<(String, i64)>,
 }
 
 impl AgentTopRow {
@@ -122,7 +124,7 @@ impl AgentTopRow {
             "live"
         } else if self.failures > 0 {
             "failed"
-        } else if self.trace.contains("local") {
+        } else if self.trace.contains("local") || self.trace.contains("agent-native") {
             "history"
         } else if self.trace.contains("db") {
             "saved"
@@ -949,6 +951,8 @@ mod tests {
             command: "codex".to_string(),
             workspace: None,
             last_message_at: None,
+            tool_breakdown: Vec::new(),
+            file_breakdown: Vec::new(),
         }
     }
 
