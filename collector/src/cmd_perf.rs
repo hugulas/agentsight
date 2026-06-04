@@ -7,15 +7,12 @@ use crate::output::{
     print_agent_top, print_json, print_stat, sorted_top_counts, top_counts_from_iter,
 };
 use crate::text::short_session_id;
-use crate::view::types::{
+use crate::model::{
     AuditCounters, ResourceSampleRow, SessionRow, Snapshot, SnapshotOptions, ViewResult,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
 use std::time::Duration;
-
-mod live;
-pub(crate) use live::{run_live_top_query, run_live_top_tui};
 
 #[cfg(test)]
 use crate::sources::agent_native as agent_native_sessions;
@@ -370,7 +367,7 @@ fn tools_for_session(snapshot: &Snapshot, session_id: &str) -> usize {
         .count()
 }
 
-fn sort_agent_rows(rows: &mut [AgentTopRow], sort: &str) {
+pub(crate) fn sort_agent_rows(rows: &mut [AgentTopRow], sort: &str) {
     let sort = sort.to_ascii_lowercase();
     rows.sort_by(|a, b| {
         let primary = match sort.as_str() {
@@ -475,7 +472,7 @@ fn dominant_model(snapshot: &Snapshot) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::view::types::AuditEventRow;
+    use crate::model::AuditEventRow;
 
     #[test]
     fn stat_tokens_ignore_touched_local_log_without_usage() {

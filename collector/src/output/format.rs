@@ -9,7 +9,7 @@ use std::path::Path;
 use crate::analyzers::common;
 use crate::event::Event;
 use crate::text::truncate_with_ellipsis as truncate;
-use crate::view::types::{AuditEventRow, LlmCallRow, TokenSummary};
+use crate::model::{AuditEventRow, LlmCallRow, TokenSummary};
 
 #[derive(Debug, Default, Serialize)]
 pub(crate) struct ResourcePeaks {

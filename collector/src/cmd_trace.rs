@@ -22,7 +22,7 @@ use crate::runners::{
 use crate::server::WebServer;
 use crate::sinks::OtelExporter;
 use crate::sources::proc::{PidSeed, ProcSnapshot};
-use crate::stores::sqlite::SqliteStore;
+use crate::sinks::sqlite::SqliteStore;
 use crate::view::{MaterializedView, SharedMaterializedView};
 
 pub(crate) const DEFAULT_SERVER_LISTEN: &str = "127.0.0.1";

@@ -25,17 +25,18 @@ mod cli_discover;
 mod cmd_debug;
 mod cmd_exec;
 mod cmd_perf;
+mod cmd_perf_live;
+mod cmd_perf_tui;
 mod cmd_trace;
 mod event;
 mod json;
+mod model;
 mod output;
 mod runners;
 mod semantic;
 mod server;
-mod session_db;
 mod sinks;
 mod sources;
-mod stores;
 mod text;
 mod time;
 mod view;
@@ -49,13 +50,15 @@ use cli_db::{
 use cli_discover::run_discover;
 use cmd_debug::{run_raw_process, run_raw_ssl, run_raw_stdio, run_system};
 use cmd_exec::{default_session_db_path, print_session_summary, run_exec};
-use cmd_perf::{run_live_top_query, run_live_top_tui, run_stat_query, run_top_query};
+use cmd_perf::{run_stat_query, run_top_query};
+use cmd_perf_live::run_live_top_query;
+use cmd_perf_tui::run_live_top_tui;
 use cmd_trace::{
     DEFAULT_RECORD_STDIO_MAX_BYTES, OtelConfig, TraceConfig, convert_runner_error, run_trace,
 };
 use output::TopOptions;
 use output::print_record_session_db_error;
-use session_db::{resolve_db_or_latest, run_db_list};
+use sources::session_db::{resolve_db_or_latest, run_db_list};
 
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 static SHUTDOWN_NOTIFY: OnceLock<Arc<Notify>> = OnceLock::new();
@@ -592,7 +595,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Setup signal handler for graceful shutdown
     setup_signal_handler(suppress_terminal_output).await;
 
-    // Handle commands that don't need the binary extractor first.
     match &cli.command {
         Commands::Db(cmd) => {
             match cmd {
@@ -634,7 +636,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 }
                 DbCommands::List => run_db_list()?,
             }
-            return Ok(());
         }
         Commands::Report { db, local } => {
             let resolved = if *local {
@@ -643,14 +644,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 resolve_db_or_latest(db).ok()
             };
             run_db_summary(resolved.as_deref())?;
-            return Ok(());
         }
         Commands::Stat {
             db, json, command, ..
         } if command.is_empty() => {
             let db = resolve_db_or_latest(db)?;
             run_stat_query(&db, *json)?;
-            return Ok(());
         }
         Commands::Top {
             db: Some(db),
@@ -672,27 +671,31 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 view: view.clone(),
             };
             run_top_query(db, *interval, *limit, count, &options)?;
-            return Ok(());
         }
         Commands::Prompts { db, limit, json } => {
             let db = resolve_db_or_latest(db)?;
             run_prompts_query(&db, *limit, *json)?;
-            return Ok(());
         }
         Commands::List => {
             run_db_list()?;
-            return Ok(());
         }
         Commands::Discover { json } => {
             run_discover(*json)?;
-            return Ok(());
         }
-        _ => {}
+        // All remaining commands need the binary extractor.
+        _ => {
+            let binary_extractor = BinaryExtractor::new().await?;
+            run_with_extractor(&cli, &binary_extractor).await?;
+        }
     }
 
-    // Create BinaryExtractor with embedded binaries
-    let binary_extractor = BinaryExtractor::new().await?;
+    Ok(())
+}
 
+async fn run_with_extractor(
+    cli: &Cli,
+    binary_extractor: &BinaryExtractor,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match &cli.command {
         Commands::Stat {
             binary_path,
@@ -764,7 +767,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 Some(path) => Some(path),
                 None => match default_session_db_path() {
                     Ok(path) => {
-                        session_db::cleanup_old_sessions();
+                        sources::session_db::cleanup_old_sessions();
                         Some(path)
                     }
                     Err(e) => {
@@ -827,9 +830,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             } else {
                 run_live_top_query(&binary_extractor, *interval, *limit, count, &options).await?;
             }
-        }
-        Commands::Top { db: Some(_), .. } => {
-            unreachable!("top --db is handled before binary extraction");
         }
         Commands::Debug(cmd) => match cmd {
             DebugCommands::Ssl {
@@ -992,13 +992,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .await
             .map_err(convert_runner_error)?,
         },
-        // Already handled above; unreachable but needed for exhaustive match.
-        Commands::Db(_)
-        | Commands::Discover { .. }
-        | Commands::Report { .. }
-        | Commands::Prompts { .. }
-        | Commands::List => unreachable!(),
+        _ => unreachable!("handled in run()"),
     }
-
     Ok(())
 }

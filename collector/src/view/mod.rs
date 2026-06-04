@@ -2,9 +2,8 @@
 // Copyright (c) 2026 eunomia-bpf org.
 
 mod projection;
-pub mod types;
 
-use crate::view::types::{
+use crate::model::{
     AGENT_NATIVE_SOURCE, AuditEventRow, LlmCallRow, NetworkTargetRow, ProcessNodeRow,
     ResourceSampleRow, SessionRow, Snapshot, SnapshotOptions, SnapshotSummary, TokenSummary,
     TokenUsageRow, ToolCallRow, ViewResult, ViewSink,

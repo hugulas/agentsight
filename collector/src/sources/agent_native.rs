@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::json::i64_field as json_i64;
 use crate::text::{sanitize_ascii_identifier as sanitize_id, short_session_id, truncate_text};
 use crate::view::MaterializedView;
-use crate::view::types::{
+use crate::model::{
     AGENT_NATIVE_SOURCE, SessionRow, Snapshot, SnapshotOptions, TokenUsageRow, ToolCallRow,
 };
 

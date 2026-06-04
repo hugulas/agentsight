@@ -20,7 +20,7 @@ use crate::output::{
     print_record_target_status_error, print_record_target_wait_error, print_record_web_ui,
 };
 use crate::runners::{Runner, RunnerError};
-use crate::session_db::sessions_dir;
+use crate::sources::session_db::sessions_dir;
 use crate::view::MaterializedView;
 
 /// Launch a target command and automatically trace it with eBPF.
@@ -83,7 +83,7 @@ pub(crate) async fn run_exec(
     } else {
         match default_session_db_path() {
             Ok(p) => {
-                crate::session_db::cleanup_old_sessions();
+                crate::sources::session_db::cleanup_old_sessions();
                 Some(p)
             }
             Err(e) => {

@@ -12,7 +12,7 @@ use crate::semantic::{
     extract_token_usage_from_sse, normalize_event, provider_from_host,
 };
 use crate::text::sanitize_ascii_identifier as sanitize_id;
-use crate::view::types::{
+use crate::model::{
     AuditEventRow, LlmCallRow, NetworkTargetRow, ProcessNodeRow, ResourceSampleRow, TokenUsageRow,
     ToolCallRow, ViewResult,
 };
@@ -875,7 +875,7 @@ mod tests {
             data,
         );
         view.ingest_event(&event).expect("ingest process event");
-        view.export_snapshot(crate::view::types::SnapshotOptions { audit_limit: 100 })
+        view.export_snapshot(crate::model::SnapshotOptions { audit_limit: 100 })
             .process_nodes
             .into_iter()
             .find(|row| {
@@ -936,7 +936,7 @@ mod tests {
         view.ingest_event(&resp).expect("ingest response");
 
         let snapshot =
-            view.export_snapshot(crate::view::types::SnapshotOptions { audit_limit: 100 });
+            view.export_snapshot(crate::model::SnapshotOptions { audit_limit: 100 });
         let llm_actions = snapshot
             .audit_events
             .iter()

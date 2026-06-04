@@ -2,7 +2,7 @@
 // Copyright (c) 2026 eunomia-bpf org.
 
 use crate::json::{parse_optional_value as parse_optional_json, parse_value as parse_json_value};
-use crate::view::types::{
+use crate::model::{
     AuditEventRow, LlmCallRow, NetworkTargetRow, ProcessNodeRow, ResourceSampleRow, TokenUsageRow,
     ToolCallRow, ViewResult, ViewSink,
 };

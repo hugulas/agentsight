@@ -820,7 +820,7 @@ mod tests {
             view.ingest_event(&event).unwrap();
         }
         let total = view
-            .export_snapshot(crate::view::types::SnapshotOptions { audit_limit: 0 })
+            .export_snapshot(crate::model::SnapshotOptions { audit_limit: 0 })
             .token_summary
             .into_iter()
             .map(|row| row.total_tokens)

@@ -3,4 +3,5 @@
 
 pub mod agent_native;
 pub mod proc;
+pub(crate) mod session_db;
 pub mod sqlite;

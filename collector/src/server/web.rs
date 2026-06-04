@@ -4,7 +4,7 @@
 use crate::server::assets::FrontendAssets;
 use crate::sources::agent_native::{self as agent_native_sessions, SessionCache};
 use crate::view::SharedMaterializedView;
-use crate::view::types::SnapshotOptions;
+use crate::model::SnapshotOptions;
 use http_body_util::Full;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;

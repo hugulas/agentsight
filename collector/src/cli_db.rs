@@ -9,10 +9,10 @@ use crate::output::{
 use crate::sources::agent_native as agent_native_sessions;
 use crate::sources::sqlite::load_view as load_sqlite_view;
 use crate::view::MaterializedView;
-use crate::view::types::{AGENT_NATIVE_SOURCE, SnapshotOptions, TokenSummary};
+use crate::model::{AGENT_NATIVE_SOURCE, SnapshotOptions, TokenSummary};
 
 #[cfg(test)]
-use crate::stores::sqlite::SqliteStore;
+use crate::sinks::sqlite::SqliteStore;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
@@ -406,7 +406,7 @@ mod tests {
             view.ingest_event(&event).unwrap();
         }
 
-        view.emit_tool_call(crate::view::types::ToolCallRow {
+        view.emit_tool_call(crate::model::ToolCallRow {
             id: "tool-1".to_string(),
             session_id: None,
             conversation_id: None,

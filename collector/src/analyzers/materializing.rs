@@ -4,7 +4,7 @@
 use crate::analyzers::{Analyzer, AnalyzerError};
 use crate::runners::EventStream;
 use crate::view::SharedMaterializedView;
-use crate::view::types::ViewSink;
+use crate::model::ViewSink;
 use async_trait::async_trait;
 use futures::stream::StreamExt;
 

@@ -19,7 +19,7 @@
 //!
 use crate::analyzers::AnalyzerError;
 use crate::semantic::llm::provider_from_host;
-use crate::view::types::{LlmCallRow, ViewResult, ViewSink};
+use crate::model::{LlmCallRow, ViewResult, ViewSink};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use hyper_util::client::legacy::Client;

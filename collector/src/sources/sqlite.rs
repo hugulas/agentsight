@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-use crate::stores::sqlite::SqliteStore;
+use crate::sinks::sqlite::SqliteStore;
 use crate::view::MaterializedView;
-use crate::view::types::ViewResult;
+use crate::model::ViewResult;
 use std::path::Path;
 
 pub(crate) fn load_view(path: impl AsRef<Path>) -> ViewResult<MaterializedView> {
