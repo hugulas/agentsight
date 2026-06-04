@@ -3,6 +3,7 @@
 
 use crate::server::assets::FrontendAssets;
 use crate::sources::sqlite::load_view as load_sqlite_view;
+use crate::view::MaterializedView;
 use crate::view::types::SnapshotOptions;
 use http_body_util::Full;
 use hyper::server::conn::http1;
@@ -95,28 +96,39 @@ async fn handle_request(
 
     let response = match (req.method(), path) {
         // API endpoints first
-        (&Method::GET, "/api/events") => serve_events_api(&log_file).await,
         (&Method::GET, "/api/assets") => serve_assets_list(assets).await,
         (&Method::GET, "/api/v1/snapshot") => {
-            serve_sqlite_api(db_path, query.as_deref(), ApiResource::Snapshot).await
+            serve_view_api(db_path, &log_file, query.as_deref(), ApiResource::Snapshot).await
         }
         (&Method::GET, "/api/v1/summary") => {
-            serve_sqlite_api(db_path, query.as_deref(), ApiResource::Summary).await
+            serve_view_api(db_path, &log_file, query.as_deref(), ApiResource::Summary).await
         }
         (&Method::GET, "/api/v1/token-summary") | (&Method::GET, "/api/v1/token/summary") => {
-            serve_sqlite_api(db_path, query.as_deref(), ApiResource::TokenSummary).await
+            serve_view_api(
+                db_path,
+                &log_file,
+                query.as_deref(),
+                ApiResource::TokenSummary,
+            )
+            .await
         }
         (&Method::GET, "/api/v1/events") => {
-            serve_sqlite_api(db_path, query.as_deref(), ApiResource::Events).await
+            serve_view_api(db_path, &log_file, query.as_deref(), ApiResource::Events).await
         }
         (&Method::GET, "/api/v1/audit-events") | (&Method::GET, "/api/v1/audit/events") => {
-            serve_sqlite_api(db_path, query.as_deref(), ApiResource::AuditEvents).await
+            serve_view_api(
+                db_path,
+                &log_file,
+                query.as_deref(),
+                ApiResource::AuditEvents,
+            )
+            .await
         }
         (&Method::GET, "/api/v1/sessions") => {
-            serve_sqlite_api(db_path, query.as_deref(), ApiResource::Sessions).await
+            serve_view_api(db_path, &log_file, query.as_deref(), ApiResource::Sessions).await
         }
         (&Method::GET, "/api/v1/agents") => {
-            serve_sqlite_api(db_path, query.as_deref(), ApiResource::Agents).await
+            serve_view_api(db_path, &log_file, query.as_deref(), ApiResource::Agents).await
         }
         // Serve static assets (catch-all for GET requests)
         (&Method::GET, _) => serve_asset(assets, path).await,
@@ -157,37 +169,6 @@ async fn serve_asset(
     }
 }
 
-async fn serve_events_api(
-    log_path: &str,
-) -> std::result::Result<Response<Full<Bytes>>, Infallible> {
-    match tokio::fs::read_to_string(log_path).await {
-        Ok(content) => {
-            log::info!(
-                "📊 Serving log file: {} ({} bytes)",
-                log_path,
-                content.len()
-            );
-            Ok(Response::builder()
-                .header("Content-Type", "text/plain")
-                .header("Access-Control-Allow-Origin", "*")
-                .body(Full::new(Bytes::from(content)))
-                .unwrap())
-        }
-        Err(e) => {
-            log::error!("❌ Failed to read log file {}: {}", log_path, e);
-            Ok(Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .header("Content-Type", "text/plain")
-                .header("Access-Control-Allow-Origin", "*")
-                .body(Full::new(Bytes::from(format!(
-                    "Failed to read log file: {}",
-                    e
-                ))))
-                .unwrap())
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 enum ApiResource {
     Snapshot,
@@ -199,23 +180,19 @@ enum ApiResource {
     Agents,
 }
 
-async fn serve_sqlite_api(
+async fn serve_view_api(
     db_path: Option<String>,
+    log_file: &str,
     query: Option<&str>,
     resource: ApiResource,
 ) -> std::result::Result<Response<Full<Bytes>>, Infallible> {
-    let Some(db_path) = db_path else {
-        return Ok(json_error(
-            StatusCode::NOT_FOUND,
-            "sqlite database is not configured; pass --db or set AGENTSIGHT_DB_PATH",
-        ));
-    };
     let audit_limit = query_param_usize(query, "audit_limit").unwrap_or(10_000);
     let group_by = query_param(query, "group_by").unwrap_or_else(|| "model".to_string());
+    let log_file = log_file.to_string();
 
     let result = tokio::task::spawn_blocking(
         move || -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
-            let view = load_sqlite_view(&db_path)?;
+            let view = load_api_view(db_path.as_deref(), &log_file)?;
             let options = SnapshotOptions { audit_limit };
             let snapshot = view.export_snapshot(options);
             let value = match resource {
@@ -237,13 +214,26 @@ async fn serve_sqlite_api(
         Ok(Ok(value)) => Ok(json_response(StatusCode::OK, &value)),
         Ok(Err(e)) => Ok(json_error(
             StatusCode::INTERNAL_SERVER_ERROR,
-            &format!("failed to query SQLite database: {}", e),
+            &format!("failed to query view data: {}", e),
         )),
         Err(e) => Ok(json_error(
             StatusCode::INTERNAL_SERVER_ERROR,
-            &format!("SQLite query task failed: {}", e),
+            &format!("view query task failed: {}", e),
         )),
     }
+}
+
+fn load_api_view(
+    db_path: Option<&str>,
+    log_file: &str,
+) -> Result<MaterializedView, Box<dyn std::error::Error + Send + Sync>> {
+    if let Some(db_path) = db_path {
+        return load_sqlite_view(db_path);
+    }
+    let mut view = MaterializedView::new();
+    view.set_source("jsonl");
+    view.ingest_jsonl_file(log_file)?;
+    Ok(view)
 }
 
 async fn serve_assets_list(

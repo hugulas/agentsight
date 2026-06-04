@@ -129,7 +129,7 @@ Scope:
 
 - Keep JSONL enabled by default.
 - SQLite is opt-in at first.
-- Server can still serve `/api/events` from JSONL.
+- Server can rebuild `/api/v1/snapshot` from JSONL when no DB is configured.
 
 Acceptance:
 
@@ -198,7 +198,7 @@ GET /api/v1/interruptions
 
 Scope:
 
-- Keep `/api/events` compatibility.
+- Keep one `/api/v1` API contract for DB and JSONL-backed views.
 - Use cursor pagination for event and audit tables.
 - Add server option `--db`.
 
@@ -330,7 +330,6 @@ Acceptance:
 Short term:
 
 - Keep `FileLogger`.
-- Keep `/api/events`.
 - Keep upload/paste frontend flow.
 - Add DB as opt-in.
 

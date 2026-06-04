@@ -124,9 +124,8 @@ internals.
 
 ## API Role
 
-- `/api/events` serves the configured JSONL log file. For `record`, `trace`, and
-  `debug`, this is now view-update JSONL.
-- `/api/v1/*` endpoints read SQLite materialized tables when a DB is configured.
+- `/api/v1/*` endpoints read SQLite materialized tables when a DB is configured,
+  or rebuild the view from the configured JSONL log when no DB is available.
 
 ## Command Flow
 

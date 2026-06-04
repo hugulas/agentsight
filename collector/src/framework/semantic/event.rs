@@ -3,7 +3,8 @@
 
 use crate::framework::core::Event;
 use crate::framework::semantic::llm::{
-    body_json, extract_model, extract_model_from_path, is_llm_path, provider_from_host,
+    body_json, extract_model, extract_model_from_path, extract_token_usage, is_llm_path,
+    provider_from_host,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -121,20 +122,31 @@ pub fn normalize_event(
     let mut kind = EventKind::Unknown;
     let mut severity = Severity::Info;
 
+    let path_is_llm = path.as_deref().map(is_llm_path).unwrap_or(false);
+    let body_is_llm = body
+        .as_ref()
+        .is_some_and(|body| extract_model(body).is_some() || !extract_token_usage(body).is_empty());
+
     if source == "http_parser" {
         match message_type {
             Some("request") => {
-                let llm = path.as_deref().map(is_llm_path).unwrap_or(false);
-                kind = if llm {
+                kind = if path_is_llm {
                     EventKind::LlmRequest
                 } else {
                     EventKind::HttpRequest
                 };
             }
             Some("response") => {
-                kind = if status_code.map(|c| c >= 400).unwrap_or(false) {
+                let is_error = status_code.map(|c| c >= 400).unwrap_or(false);
+                if is_error {
                     severity = Severity::Error;
-                    EventKind::LlmError
+                }
+                kind = if path_is_llm || body_is_llm {
+                    if is_error {
+                        EventKind::LlmError
+                    } else {
+                        EventKind::LlmResponse
+                    }
                 } else {
                     EventKind::HttpResponse
                 };

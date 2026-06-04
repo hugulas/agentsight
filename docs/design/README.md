@@ -15,3 +15,9 @@ For current user-facing usage, prefer:
 When a design note conflicts with the current CLI or source code, treat the
 source code and the user-facing docs above as authoritative. Update or archive
 design notes instead of copying old commands back into product docs.
+
+Current architecture notes:
+
+- [Materialized View Architecture](materialized-view-architecture.md)
+- [View, Session, And Process Model](view-session-process-model.md)
+- [AgentSight Top as a Session Monitor](session-centric-top.md)

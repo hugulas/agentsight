@@ -15,27 +15,6 @@ import { Event } from '@/types/event';
 
 type ViewMode = 'log' | 'timeline' | 'process-tree' | 'metrics';
 
-interface SnapshotEvent {
-  id: string;
-  timestamp_ms: number;
-  source: string;
-  kind: string;
-  severity: string;
-  summary?: string | null;
-  pid?: number | null;
-  comm?: string | null;
-  host?: string | null;
-  method?: string | null;
-  path?: string | null;
-  status_code?: number | null;
-  provider?: string | null;
-  model?: string | null;
-  session_id?: string | null;
-  conversation_id?: string | null;
-  adapter_id?: string | null;
-  confidence?: number | null;
-}
-
 interface SnapshotTokenSummary {
   group: string;
   input_tokens?: number;
@@ -89,45 +68,13 @@ interface AgentSightSnapshot {
   schema_version?: number;
   generated_at?: string;
   summary?: Record<string, unknown>;
-  events?: SnapshotEvent[];
   token_summary?: SnapshotTokenSummary[];
   network_targets?: SnapshotNetworkTarget[];
   audit_events?: SnapshotAuditEvent[];
   sessions?: SnapshotSession[];
-  agents?: unknown[];
-  interruptions?: unknown[];
 }
 
 function snapshotToEvents(snapshot: AgentSightSnapshot): Event[] {
-  if (Array.isArray(snapshot.events) && snapshot.events.length > 0) {
-    return snapshot.events
-      .filter(event => event && typeof event.timestamp_ms === 'number' && event.source)
-      .map((event, index) => ({
-        id: event.id || `${event.source}-${event.timestamp_ms}-${index}`,
-        timestamp: event.timestamp_ms,
-        source: event.source,
-        pid: event.pid ?? 0,
-        comm: event.comm ?? '',
-        data: {
-          event: 'SQLITE_CANONICAL_EVENT',
-          kind: event.kind,
-          severity: event.severity,
-          summary: event.summary,
-          host: event.host,
-          method: event.method,
-          path: event.path,
-          status_code: event.status_code,
-          provider: event.provider,
-          model: event.model,
-          session_id: event.session_id,
-          conversation_id: event.conversation_id,
-          adapter_id: event.adapter_id,
-          confidence: event.confidence,
-        },
-      }))
-      .sort((a, b) => a.timestamp - b.timestamp);
-  }
-
   return [
     ...materializedAuditEvents(snapshot.audit_events),
     ...materializedNetworkEvents(snapshot.network_targets),
@@ -245,6 +192,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function parseContentEvents(content: string): Event[] {
+  return parseSnapshotContent(content) ?? parseJsonlEvents(content);
+}
+
 function parseSnapshotContent(content: string): Event[] | null {
   const trimmed = content.trim();
   if (!trimmed.startsWith('{')) {
@@ -263,11 +214,88 @@ function parseSnapshotContent(content: string): Event[] | null {
 }
 
 function isSnapshotPayload(snapshot: AgentSightSnapshot): boolean {
-  return Array.isArray(snapshot.events)
-    || Array.isArray(snapshot.audit_events)
+  return Array.isArray(snapshot.audit_events)
     || Array.isArray(snapshot.network_targets)
     || Array.isArray(snapshot.sessions)
     || Array.isArray(snapshot.token_summary);
+}
+
+function parseJsonlEvents(content: string): Event[] {
+  const events: Event[] = [];
+  content.split('\n').forEach((line, index) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    try {
+      events.push(...jsonLineToEvents(JSON.parse(trimmed), index));
+    } catch {
+      // Ignore malformed lines; empty output below reports a user-facing error.
+    }
+  });
+  return events.sort((a, b) => a.timestamp - b.timestamp);
+}
+
+function jsonLineToEvents(value: unknown, index: number): Event[] {
+  if (!isRecord(value)) return [];
+  if (typeof value.timestamp === 'number' && typeof value.source === 'string' && isRecord(value.data)) {
+    return [{
+      id: typeof value.id === 'string' ? value.id : `${value.source}-${value.timestamp}-${index}`,
+      timestamp: value.timestamp,
+      source: value.source,
+      pid: typeof value.pid === 'number' ? value.pid : 0,
+      comm: typeof value.comm === 'string' ? value.comm : '',
+      data: value.data,
+    }];
+  }
+  if (typeof value.kind === 'string' && isRecord(value.row)) {
+    return viewUpdateToEvents(value.kind, value.row, index);
+  }
+  return [];
+}
+
+function viewUpdateToEvents(kind: string, row: Record<string, unknown>, index: number): Event[] {
+  const r = row as any;
+  switch (kind) {
+    case 'audit_event':
+      return materializedAuditEvents([r]);
+    case 'network_target':
+      return materializedNetworkEvents([r]);
+    case 'session':
+      return materializedSessionEvents([r]);
+    case 'token_usage':
+      return materializedTokenEvents([{
+        group: String(r.model ?? r.provider ?? r.comm ?? `pid:${r.pid ?? 0}`),
+        input_tokens: r.input_tokens,
+        output_tokens: r.output_tokens,
+        total_tokens: r.total_tokens,
+        calls: 1,
+      }], new Date(r.timestamp_ms ?? Date.now()).toISOString());
+    case 'llm_call':
+      return materializedAuditEvents([{
+        id: `audit-${r.id ?? index}`,
+        timestamp_ms: r.end_timestamp_ms ?? r.start_timestamp_ms ?? 0,
+        audit_type: 'llm',
+        pid: r.pid,
+        comm: r.comm,
+        subject: r.model,
+        action: 'call',
+        target: r.host,
+        status: typeof r.status_code === 'number' && r.status_code >= 400 ? 'failure' : 'success',
+        summary: 'LLM call',
+        details: r.response ?? r.request ?? {},
+      }]);
+    case 'tool_call':
+    case 'resource_sample':
+      return [{
+        id: `${kind}-${r.id ?? r.timestamp_ms ?? index}`,
+        timestamp: r.timestamp_ms ?? r.end_timestamp_ms ?? r.start_timestamp_ms ?? 0,
+        source: kind === 'tool_call' ? 'tool' : 'system',
+        pid: r.pid ?? r.related_pid ?? 0,
+        comm: r.comm ?? '',
+        data: { ...r, event: kind.toUpperCase() },
+      }];
+    default:
+      return [];
+  }
 }
 
 export default function Home() {
@@ -282,6 +310,20 @@ export default function Home() {
   const [isParsed, setIsParsed] = useState(false);
   const [showUploadPanel, setShowUploadPanel] = useState(false);
 
+  const loadEvents = (content: string, nextEvents: Event[], emptyMessage: string) => {
+    if (nextEvents.length === 0) {
+      setError(emptyMessage);
+      return false;
+    }
+    setLogContent(content);
+    setEvents(nextEvents);
+    setIsParsed(true);
+    setShowUploadPanel(false);
+    localStorage.setItem('agent-tracer-log', content);
+    localStorage.setItem('agent-tracer-events', JSON.stringify(nextEvents));
+    return true;
+  };
+
   const parseLogContent = (content: string) => {
     if (!content.trim()) {
       setError('Empty log content');
@@ -292,74 +334,7 @@ export default function Home() {
     setError('');
 
     try {
-      const snapshotEvents = parseSnapshotContent(content);
-      if (snapshotEvents) {
-        if (snapshotEvents.length === 0) {
-          setError('Snapshot contains no events');
-          return;
-        }
-        setEvents(snapshotEvents);
-        setIsParsed(true);
-        setShowUploadPanel(false);
-        localStorage.setItem('agent-tracer-log', content);
-        localStorage.setItem('agent-tracer-events', JSON.stringify(snapshotEvents));
-        return;
-      }
-
-      const lines = content.split('\n').filter(line => line.trim());
-      const parsedEvents: Event[] = [];
-      const errors: string[] = [];
-
-      lines.forEach((line, index) => {
-        try {
-          const event = JSON.parse(line.trim()) as Event;
-
-          // Timestamp is expected to be in milliseconds since UNIX epoch
-          // (handled by TimestampNormalizer analyzer in the backend)
-
-          // Validate event structure - auto-generate id if missing
-          if (event.timestamp && event.source && event.data) {
-            if (!event.id) {
-              event.id = `${event.source}-${event.timestamp}-${index}`;
-            }
-            parsedEvents.push(event);
-          } else {
-            // Track validation errors
-            const missing = [];
-            if (!event.timestamp) missing.push('timestamp');
-            if (!event.source) missing.push('source');
-            if (!event.data) missing.push('data');
-            errors.push(`Line ${index + 1}: Missing required fields: ${missing.join(', ')}`);
-          }
-        } catch (err) {
-          errors.push(`Line ${index + 1}: Invalid JSON - ${err instanceof Error ? err.message : 'Unknown error'}`);
-        }
-      });
-
-      if (parsedEvents.length === 0) {
-        const errorMsg = errors.length > 0 
-          ? `No valid events found. Errors:\n${errors.slice(0, 10).join('\n')}${errors.length > 10 ? '\n...and ' + (errors.length - 10) + ' more errors' : ''}`
-          : 'No valid events found in the log file';
-        setError(errorMsg);
-        return;
-      }
-
-      // Show warnings for partial parsing
-      if (errors.length > 0) {
-        console.warn(`Parsed ${parsedEvents.length} events with ${errors.length} errors:`, errors);
-      }
-
-      // Sort events by timestamp
-      const sortedEvents = parsedEvents.sort((a, b) => a.timestamp - b.timestamp);
-      
-      setEvents(sortedEvents);
-      setIsParsed(true);
-      setShowUploadPanel(false); // Hide upload panel after successful parse
-      
-      // Save to localStorage
-      localStorage.setItem('agent-tracer-log', content);
-      localStorage.setItem('agent-tracer-events', JSON.stringify(sortedEvents));
-      
+      loadEvents(content, parseContentEvents(content), 'No valid events found in the log file');
     } catch (err) {
       setError(`Failed to parse log content: ${err instanceof Error ? err.message : 'Unknown error'}`);
     } finally {
@@ -373,43 +348,13 @@ export default function Home() {
 
     try {
       const snapshotResponse = await fetch('/api/v1/snapshot?event_limit=50000&audit_limit=50000');
-      if (snapshotResponse.ok) {
-        const snapshot = await snapshotResponse.json() as AgentSightSnapshot;
-        const snapshotEvents = snapshotToEvents(snapshot);
-        if (snapshotEvents.length === 0) {
-          setError('No SQLite events received from server');
-          return;
-        }
-
-        const content = JSON.stringify(snapshot, null, 2);
-        setLogContent(content);
-        setEvents(snapshotEvents);
-        setIsParsed(true);
-        setShowUploadPanel(false);
-        localStorage.setItem('agent-tracer-log', content);
-        localStorage.setItem('agent-tracer-events', JSON.stringify(snapshotEvents));
-        return;
+      if (!snapshotResponse.ok) {
+        throw new Error(`/api/v1/snapshot ${snapshotResponse.status} ${snapshotResponse.statusText}`);
       }
-
-      const response = await fetch('/api/events');
-      
-      if (!response.ok) {
-        throw new Error(
-          `Failed to fetch data: /api/v1/snapshot ${snapshotResponse.status} ${snapshotResponse.statusText}; ` +
-          `/api/events ${response.status} ${response.statusText}`
-        );
-      }
-
-      const content = await response.text();
-      
-      if (!content.trim()) {
-        setError('No data received from server');
-        return;
-      }
-
-      setLogContent(content);
-      parseLogContent(content);
-      
+      const snapshot = await snapshotResponse.json() as AgentSightSnapshot;
+      const snapshotEvents = snapshotToEvents(snapshot);
+      const content = JSON.stringify(snapshot, null, 2);
+      loadEvents(content, snapshotEvents, 'No events received from server');
     } catch (err) {
       setError(`Failed to sync data: ${err instanceof Error ? err.message : 'Unknown error'}`);
     } finally {
@@ -442,8 +387,13 @@ export default function Home() {
         if (!res.ok) return; // No sample available (e.g. local dev) - keep empty state.
         const content = await res.text();
         if (cancelled || !content.trim()) return;
+        const sampleEvents = parseContentEvents(content);
+        if (sampleEvents.length === 0) return;
         setLogContent(content);
-        parseLogContent(content);
+        setEvents(sampleEvents);
+        setIsParsed(true);
+        localStorage.setItem('agent-tracer-log', content);
+        localStorage.setItem('agent-tracer-events', JSON.stringify(sampleEvents));
       } catch {
         // Network / static-host hiccup: silently keep the empty state.
       }

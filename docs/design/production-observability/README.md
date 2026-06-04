@@ -580,9 +580,9 @@ separate JSONL parser.
 
 ### HTTP API
 
-The embedded server serves SQLite-backed `/api/v1` endpoints when started with
-`--db` or `AGENTSIGHT_DB_PATH`. The old `/api/events` JSONL endpoint remains for
-compatibility.
+The embedded server serves `/api/v1` endpoints from SQLite when started with
+`--db` or `AGENTSIGHT_DB_PATH`, otherwise from the configured ViewUpdate JSONL
+log.
 
 ```text
 GET /api/v1/snapshot?event_limit=&audit_limit=

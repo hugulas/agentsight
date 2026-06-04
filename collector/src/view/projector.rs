@@ -14,6 +14,9 @@ use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const PENDING_REQUEST_TTL_MS: u64 = 5 * 60 * 1000;
+const MAX_PENDING_REQUESTS_PER_STREAM: usize = 16;
+
 #[derive(Debug, Clone)]
 struct PendingRequest {
     event_id: String,
@@ -49,6 +52,7 @@ impl ViewProjector {
             self.next_seq
         );
         let canonical = normalize_event(event, raw_id, now_ms());
+        self.prune_pending(canonical.timestamp_ms);
         let mut updates = Vec::new();
         if let Some(sample) = resource_sample_from_event(&canonical) {
             emit(&mut updates, ViewUpdate::ResourceSample(sample));
@@ -81,7 +85,7 @@ impl ViewProjector {
         self.ingest_agent_specific_event(event, updates);
         match event.kind {
             EventKind::LlmRequest => self.ingest_llm_request(event, updates),
-            EventKind::HttpResponse | EventKind::LlmResponse | EventKind::LlmError => {
+            EventKind::LlmResponse | EventKind::LlmError => {
                 self.ingest_llm_response(event, updates)
             }
             EventKind::ProcessExec => self.ingest_process_audit(event, "exec", updates),
@@ -109,7 +113,11 @@ impl ViewProjector {
             body_json: body_json(&event.attributes),
         };
         self.insert_orphan_llm_request(&req, updates);
-        self.pending.entry((pid, tid)).or_default().push_back(req);
+        let requests = self.pending.entry((pid, tid)).or_default();
+        requests.push_back(req);
+        while requests.len() > MAX_PENDING_REQUESTS_PER_STREAM {
+            requests.pop_front();
+        }
     }
 
     fn ingest_llm_response(&mut self, event: &CanonicalEvent, updates: &mut Vec<ViewUpdate>) {
@@ -146,6 +154,19 @@ impl ViewProjector {
             self.pending.remove(&(pid, tid));
         }
         Some((req, confidence))
+    }
+
+    fn prune_pending(&mut self, now_ms: u64) {
+        let cutoff = now_ms.saturating_sub(PENDING_REQUEST_TTL_MS);
+        self.pending.retain(|_, requests| {
+            while requests
+                .front()
+                .is_some_and(|req| req.timestamp_ms < cutoff)
+            {
+                requests.pop_front();
+            }
+            !requests.is_empty()
+        });
     }
 
     fn upsert_llm_pair(
