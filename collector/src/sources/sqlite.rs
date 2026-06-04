@@ -26,9 +26,6 @@ pub(crate) fn load_view(path: impl AsRef<Path>) -> ViewResult<MaterializedView> 
     for row in store.tool_call_rows()? {
         view.load_tool_call(row);
     }
-    for row in store.session_rows()? {
-        view.load_session(row);
-    }
     for row in store.network_target_rows()? {
         view.load_network_target(row);
     }

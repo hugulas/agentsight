@@ -6,10 +6,10 @@ use crate::output::{
     print_json, print_llm_prompts, print_session_summary, print_token_summary, prompt_text_chars,
     sorted_top_counts,
 };
-use crate::sources::session as agent_native_sessions;
+use crate::sources::agent_native as agent_native_sessions;
 use crate::sources::sqlite::load_view as load_sqlite_view;
 use crate::view::MaterializedView;
-use crate::view::types::{SnapshotOptions, TokenSummary};
+use crate::view::types::{AGENT_NATIVE_SOURCE, SnapshotOptions, TokenSummary};
 
 #[cfg(test)]
 use crate::stores::sqlite::SqliteStore;
@@ -22,12 +22,27 @@ pub(crate) fn configured_db_path(cli_value: &Option<String>) -> Option<String> {
         .or_else(|| std::env::var("AGENTSIGHT_DB_PATH").ok())
 }
 
+pub(crate) fn load_agentsight_view(
+    db: Option<&str>,
+) -> Result<MaterializedView, Box<dyn std::error::Error + Send + Sync>> {
+    let mut view = match db {
+        Some(db) => load_sqlite_view(db)?,
+        None => {
+            let mut view = MaterializedView::new();
+            view.set_source(AGENT_NATIVE_SOURCE);
+            view
+        }
+    };
+    agent_native_sessions::import_recent(&mut view, 25);
+    Ok(view)
+}
+
 pub(crate) fn run_token_query(
     db: &str,
     group_by: &str,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let view = load_sqlite_view(db)?;
+    let view = load_agentsight_view(Some(db))?;
     let rows = view.token_summary(group_by);
     if json {
         print_json(&rows)?;
@@ -43,7 +58,7 @@ pub(crate) fn run_audit_query(
     limit: usize,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let view = load_sqlite_view(db)?;
+    let view = load_agentsight_view(Some(db))?;
     let rows = view.audit_rows(audit_type, limit);
     if json {
         print_json(&rows)?;
@@ -58,7 +73,7 @@ pub(crate) fn run_prompts_query(
     limit: usize,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let view = load_sqlite_view(db)?;
+    let view = load_agentsight_view(Some(db))?;
     let rows = view.llm_call_rows(limit);
     if json {
         print_json(&rows)?;
@@ -73,7 +88,7 @@ pub(crate) fn run_export(
     output: &str,
     audit_limit: usize,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let view = load_sqlite_view(db)?;
+    let view = load_agentsight_view(Some(db))?;
     let snapshot = view.export_snapshot(SnapshotOptions { audit_limit });
     let json = serde_json::to_vec_pretty(&snapshot)?;
     if output == "-" {
@@ -88,12 +103,7 @@ pub(crate) fn run_export(
 }
 
 impl SessionSummary {
-    pub fn from_sqlite(db: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let view = load_sqlite_view(db)?;
-        Self::from_view(&view)
-    }
-
-    pub fn from_view(
+    pub(crate) fn from_view(
         view: &MaterializedView,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let snap = view.export_snapshot(SnapshotOptions {
@@ -190,13 +200,21 @@ impl SessionSummary {
             .into_iter()
             .map(|(endpoint, count)| format!("{endpoint}({count})"))
             .collect();
-        let first_tool_timestamp_ms = view.first_tool_timestamp_ms();
-        let first_tool_after_ms =
-            first_tool_timestamp_ms.and_then(|ts| after_start(s.start_timestamp_ms, ts));
-        let tool_calls = view.tool_counts();
+        let first_tool_after_ms = snap
+            .tool_calls
+            .iter()
+            .map(|row| row.timestamp_ms)
+            .min()
+            .and_then(|ts| after_start(s.start_timestamp_ms, ts));
+        let mut tool_calls = BTreeMap::new();
         let mut tool_duration_ms = SummaryStats::default();
-        for duration_ms in view.tool_durations_ms() {
-            tool_duration_ms.add(duration_ms);
+        for row in &snap.tool_calls {
+            *tool_calls
+                .entry(row.tool_name.clone().unwrap_or_else(|| "?".to_string()))
+                .or_default() += 1;
+            if let Some(duration_ms) = row.duration_ms {
+                tool_duration_ms.add(duration_ms);
+            }
         }
         Ok(Self {
             source: s.source.clone(),
@@ -248,12 +266,7 @@ fn file_directory(path: &str) -> String {
 pub(crate) fn run_db_summary(
     db: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut view = match db {
-        Some(db) => load_sqlite_view(db)?,
-        None => MaterializedView::new(),
-    };
-    let sessions = agent_native_sessions::discover(25);
-    agent_native_sessions::import_into_view(&mut view, &sessions);
+    let view = load_agentsight_view(db)?;
     print_session_summary(&SessionSummary::from_view(&view)?);
     Ok(())
 }
@@ -261,7 +274,7 @@ pub(crate) fn run_db_summary(
 pub(crate) fn run_agent_native_audit(
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let view = agent_native_view()?;
+    let view = load_agentsight_view(None)?;
     if json {
         print_json(&view.export_snapshot(SnapshotOptions {
             audit_limit: 50_000,
@@ -272,22 +285,16 @@ pub(crate) fn run_agent_native_audit(
     Ok(())
 }
 
-pub(crate) fn count_local_sessions() -> Vec<(&'static str, std::path::PathBuf, usize, u64)> {
-    agent_native_sessions::count_local_sessions()
-}
-
-fn agent_native_view() -> Result<MaterializedView, Box<dyn std::error::Error + Send + Sync>> {
-    agent_native_sessions::recent_view(25).ok_or_else(|| {
-        "No agent-native session data found. Run Claude Code or Codex, run `agentsight record`, or pass --db."
-            .into()
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::framework::core::Event;
     use serde_json::json;
+
+    fn sqlite_summary(db: &std::path::Path) -> SessionSummary {
+        let view = load_sqlite_view(db).unwrap();
+        SessionSummary::from_view(&view).unwrap()
+    }
 
     #[test]
     fn sqlite_load_view_does_not_create_missing_db() {
@@ -419,7 +426,7 @@ mod tests {
         })
         .unwrap();
 
-        let summary = SessionSummary::from_sqlite(db.to_str().unwrap()).unwrap();
+        let summary = sqlite_summary(&db);
         assert_eq!(summary.duration_s, 0.9);
         assert_eq!(summary.first_llm_after_ms, Some(200));
         assert_eq!(summary.first_tool_after_ms, Some(500));
@@ -469,7 +476,7 @@ mod tests {
             )
             .unwrap();
 
-        let summary = SessionSummary::from_sqlite(db.to_str().unwrap()).unwrap();
+        let summary = sqlite_summary(&db);
         assert!(summary.models.is_empty());
         assert!(summary.tool_calls.is_empty());
 
@@ -478,11 +485,6 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM token_usage", [], |row| row.get(0))
             .unwrap();
         assert_eq!(token_rows, 0);
-        let session_rows: i64 = store
-            .connection()
-            .query_row("SELECT COUNT(*) FROM agent_sessions", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(session_rows, 0);
     }
 
     #[test]
@@ -519,7 +521,7 @@ mod tests {
             )
             .unwrap();
 
-        let summary = SessionSummary::from_sqlite(db.to_str().unwrap()).unwrap();
+        let summary = sqlite_summary(&db);
         assert_eq!(summary.models, vec![("ssl-model".to_string(), 8, 5, 13, 1)]);
         assert_eq!(summary.prompt_chars.total, 0);
     }
@@ -529,7 +531,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join(".claude/projects/test/session.jsonl");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let session = agent_native_sessions::parse_content(
+        let session = agent_native_sessions::parse_content_for_test(
             "claude",
             &path,
             std::time::UNIX_EPOCH,
@@ -539,7 +541,12 @@ mod tests {
             ),
         )
         .unwrap();
-        assert_eq!(session.models["claude-opus-4-6"], (3, 11, 26));
-        assert_eq!(session.tools.get("Bash"), Some(&1));
+        let view = agent_native_sessions::materialized_view(&[session]);
+        let summary = SessionSummary::from_view(&view).unwrap();
+        assert_eq!(
+            summary.models,
+            vec![("claude-opus-4-6".to_string(), 3, 11, 26, 1)]
+        );
+        assert_eq!(summary.tool_calls.get("Bash"), Some(&1));
     }
 }

@@ -4,6 +4,7 @@
 use futures::stream::StreamExt;
 
 use crate::binary_resolver::{binary_embeds_ssl, resolve_binary_path};
+use crate::cli_db::load_agentsight_view;
 use crate::cmd_trace::{
     DEFAULT_RECORD_STDIO_MAX_BYTES, TraceConfig, build_trace_agent_with_view, drain_stream_for,
     prepare_process_seeds, start_web_server_if_enabled,
@@ -21,7 +22,7 @@ use crate::output::{
     print_record_sudo_prompt, print_record_target_exited, print_record_target_shutdown_error,
     print_record_target_status_error, print_record_target_wait_error, print_record_web_ui,
 };
-use crate::session::sessions_dir;
+use crate::session_db::sessions_dir;
 use crate::view::MaterializedView;
 
 /// Launch a target command and automatically trace it with eBPF.
@@ -55,7 +56,10 @@ pub(crate) fn default_session_db_path() -> Result<String, RunnerError> {
 }
 
 pub(crate) fn print_session_summary(db_path: &str) {
-    if let Ok(summary) = SessionSummary::from_sqlite(db_path) {
+    let Ok(view) = load_agentsight_view(Some(db_path)) else {
+        return;
+    };
+    if let Ok(summary) = SessionSummary::from_view(&view) {
         print_record_session_summary(&summary);
     }
 }
@@ -81,7 +85,7 @@ pub(crate) async fn run_exec(
     } else {
         match default_session_db_path() {
             Ok(p) => {
-                crate::session::cleanup_old_sessions();
+                crate::session_db::cleanup_old_sessions();
                 Some(p)
             }
             Err(e) => {

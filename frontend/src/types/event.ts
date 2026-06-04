@@ -84,9 +84,6 @@ export interface SnapshotResourceSample {
 export interface SnapshotSession {
   id: string;
   agent_type: string;
-  agent_name?: string | null;
-  pid?: number | null;
-  comm?: string | null;
   start_timestamp_ms: number;
   end_timestamp_ms?: number | null;
   status?: string;
@@ -95,6 +92,17 @@ export interface SnapshotSession {
   output_tokens?: number;
   total_tokens?: number;
   attributes?: unknown;
+}
+
+export interface SnapshotToolCall {
+  id: string;
+  session_id?: string | null;
+  timestamp_ms: number;
+  tool_name?: string | null;
+  status?: string | null;
+  input?: unknown;
+  output?: unknown;
+  related_pid?: number | null;
 }
 
 export interface AgentSightSnapshot {
@@ -107,17 +115,7 @@ export interface AgentSightSnapshot {
   audit_events?: SnapshotAuditEvent[];
   resource_samples?: SnapshotResourceSample[];
   sessions?: SnapshotSession[];
-}
-
-export function snapshotEventCount(snapshot: AgentSightSnapshot | null): number {
-  if (!snapshot) return 0;
-  return [
-    snapshot.audit_events,
-    snapshot.process_nodes,
-    snapshot.network_targets,
-    snapshot.resource_samples,
-    snapshot.sessions,
-  ].reduce((total, rows) => total + (Array.isArray(rows) ? rows.length : 0), 0);
+  tool_calls?: SnapshotToolCall[];
 }
 
 export function snapshotToViewEvents(snapshot: AgentSightSnapshot | null): ViewEvent[] {
@@ -128,6 +126,7 @@ export function snapshotToViewEvents(snapshot: AgentSightSnapshot | null): ViewE
     ...networkEvents(snapshot.network_targets),
     ...resourceEvents(snapshot.resource_samples),
     ...sessionEvents(snapshot.sessions),
+    ...toolEvents(snapshot.tool_calls),
   ].sort((a, b) => a.timestamp - b.timestamp);
 }
 
@@ -206,19 +205,37 @@ function sessionEvents(rows?: SnapshotSession[]): ViewEvent[] {
     id: `session-${row.id}`,
     timestamp: row.end_timestamp_ms ?? row.start_timestamp_ms,
     source: 'session',
-    pid: row.pid ?? 0,
-    comm: row.comm ?? row.agent_name ?? row.agent_type,
+    pid: 0,
+    comm: row.agent_type,
     data: {
       ...(isRecord(row.attributes) ? row.attributes : {}),
       event: 'SESSION',
       session_id: row.id,
       agent_type: row.agent_type,
-      agent_name: row.agent_name,
       status: row.status,
       model: row.model,
       input_tokens: row.input_tokens ?? 0,
       output_tokens: row.output_tokens ?? 0,
       total_tokens: row.total_tokens ?? 0,
+    },
+  }));
+}
+
+function toolEvents(rows?: SnapshotToolCall[]): ViewEvent[] {
+  if (!Array.isArray(rows)) return [];
+  return rows.map(row => ({
+    id: `tool-${row.id}`,
+    timestamp: row.timestamp_ms,
+    source: 'tool',
+    pid: row.related_pid ?? 0,
+    comm: row.tool_name ?? 'tool',
+    data: {
+      event: 'TOOL_CALL',
+      session_id: row.session_id,
+      tool_name: row.tool_name,
+      status: row.status,
+      input: row.input,
+      output: row.output,
     },
   }));
 }

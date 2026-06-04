@@ -27,7 +27,7 @@ mod cmd_trace;
 mod framework;
 mod output;
 mod server;
-mod session;
+mod session_db;
 mod sinks;
 mod sources;
 mod stores;
@@ -51,7 +51,7 @@ use framework::{
 };
 use output::TopOptions;
 use output::print_record_session_db_error;
-use session::{resolve_db_or_latest, run_db_list};
+use session_db::{resolve_db_or_latest, run_db_list};
 
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 static SHUTDOWN_NOTIFY: OnceLock<Arc<Notify>> = OnceLock::new();
@@ -760,7 +760,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 Some(path) => Some(path),
                 None => match default_session_db_path() {
                     Ok(path) => {
-                        session::cleanup_old_sessions();
+                        session_db::cleanup_old_sessions();
                         Some(path)
                     }
                     Err(e) => {

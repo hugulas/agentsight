@@ -13,7 +13,6 @@ use crate::view::types::{
 };
 use crate::view::{MaterializedView, PendingRequest};
 use serde_json::Value;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const PENDING_REQUEST_TTL_MS: u64 = 5 * 60 * 1000;
 const MAX_PENDING_REQUESTS_PER_STREAM: usize = 16;
@@ -28,7 +27,7 @@ impl MaterializedView {
             event.pid,
             self.next_seq
         );
-        let canonical = normalize_event(event, raw_id, now_ms());
+        let canonical = normalize_event(event, raw_id);
         self.prune_pending(canonical.timestamp_ms);
         if let Some(sample) = resource_sample_from_event(&canonical) {
             self.emit_resource_sample(sample)?;
@@ -819,13 +818,6 @@ fn resource_sample_from_event(event: &CanonicalEvent) -> Option<ResourceSampleRo
         cpu_percent: cpu,
         rss_mb: rss_mb.map(|v| v.max(0.0) as i64),
     })
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
 }
 
 fn sanitize_id(s: &str) -> String {

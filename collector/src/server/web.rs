@@ -2,7 +2,7 @@
 // Copyright (c) 2026 eunomia-bpf org.
 
 use crate::server::assets::FrontendAssets;
-use crate::sources::session::{self as agent_native_sessions, SessionCache};
+use crate::sources::agent_native::{self as agent_native_sessions, SessionCache};
 use crate::view::SharedMaterializedView;
 use crate::view::types::SnapshotOptions;
 use http_body_util::Full;
@@ -170,7 +170,6 @@ enum ApiResource {
     AuditEvents,
     ProcessNodes,
     Sessions,
-    Agents,
 }
 
 fn api_resource_for_path(path: &str) -> Option<ApiResource> {
@@ -181,7 +180,6 @@ fn api_resource_for_path(path: &str) -> Option<ApiResource> {
         "/api/v1/audit-events" => Some(ApiResource::AuditEvents),
         "/api/v1/process-nodes" => Some(ApiResource::ProcessNodes),
         "/api/v1/sessions" => Some(ApiResource::Sessions),
-        "/api/v1/agents" => Some(ApiResource::Agents),
         _ => None,
     }
 }
@@ -200,22 +198,32 @@ async fn serve_view_api(
             let agent_native_rows = agent_native_sessions
                 .lock()
                 .map_err(|_| std::io::Error::other("agent-native session cache lock poisoned"))?
-                .discover_cached(25, Duration::from_secs(1));
-            let mut view = view
-                .lock()
-                .map_err(|_| std::io::Error::other("live view lock poisoned"))?;
-            agent_native_sessions::import_into_view(&mut view, &agent_native_rows);
+                .discover_cached(25, Duration::from_secs(2));
             let value = match resource {
-                ApiResource::TokenSummary => serde_json::to_value(view.token_summary(&group_by))?,
+                ApiResource::TokenSummary => {
+                    let rows = {
+                        let mut view = view
+                            .lock()
+                            .map_err(|_| std::io::Error::other("live view lock poisoned"))?;
+                        agent_native_sessions::import_into_view(&mut view, &agent_native_rows);
+                        view.token_summary(&group_by)
+                    };
+                    serde_json::to_value(rows)?
+                }
                 _ => {
-                    let snapshot = view.export_snapshot(SnapshotOptions { audit_limit });
+                    let snapshot = {
+                        let mut view = view
+                            .lock()
+                            .map_err(|_| std::io::Error::other("live view lock poisoned"))?;
+                        agent_native_sessions::import_into_view(&mut view, &agent_native_rows);
+                        view.export_snapshot(SnapshotOptions { audit_limit })
+                    };
                     match resource {
                         ApiResource::Snapshot => serde_json::to_value(snapshot)?,
                         ApiResource::Summary => serde_json::to_value(snapshot.summary)?,
                         ApiResource::AuditEvents => serde_json::to_value(snapshot.audit_events)?,
                         ApiResource::ProcessNodes => serde_json::to_value(snapshot.process_nodes)?,
                         ApiResource::Sessions => serde_json::to_value(snapshot.sessions)?,
-                        ApiResource::Agents => serde_json::to_value(snapshot.agents)?,
                         ApiResource::TokenSummary => unreachable!(),
                     }
                 }

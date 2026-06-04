@@ -87,7 +87,7 @@ fn top_without_db_uses_live_process_view() {
 }
 
 #[test]
-fn top_discovers_agent_native_local_sessions() {
+fn top_discovers_agent_native_sessions() {
     let temp = tempfile::tempdir().expect("tempdir");
     let session_dir = temp.path().join(".codex/sessions/2026/06/02");
     std::fs::create_dir_all(&session_dir).expect("session dir");

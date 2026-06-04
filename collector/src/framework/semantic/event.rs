@@ -16,21 +16,14 @@ pub enum EventKind {
     LlmRequest,
     LlmResponse,
     LlmError,
-    TokenUsage,
     ProcessExec,
     ProcessExit,
-    ProcessSignal,
     FsOpen,
     FsWrite,
     FsMutation,
     StdioMessage,
     StdioRpc,
     ResourceSample,
-    AgentStatus,
-    SessionStart,
-    SessionEnd,
-    ToolCall,
-    Interruption,
     Unknown,
 }
 
@@ -46,9 +39,7 @@ pub enum Severity {
 pub struct CanonicalEvent {
     pub schema_version: u16,
     pub event_id: String,
-    pub raw_event_id: String,
     pub timestamp_ms: u64,
-    pub ingest_timestamp_ms: u64,
     pub source: String,
     pub kind: EventKind,
     pub severity: Severity,
@@ -56,9 +47,7 @@ pub struct CanonicalEvent {
     pub pid: Option<u32>,
     pub tid: Option<u64>,
     pub ppid: Option<u32>,
-    pub uid: Option<u32>,
     pub comm: Option<String>,
-    pub container_id: Option<String>,
     pub host: Option<String>,
     pub method: Option<String>,
     pub path: Option<String>,
@@ -66,23 +55,14 @@ pub struct CanonicalEvent {
     pub provider: Option<String>,
     pub model: Option<String>,
     pub request_id: Option<String>,
-    pub trace_id: Option<String>,
-    pub session_id: Option<String>,
-    pub conversation_id: Option<String>,
-    pub parent_event_id: Option<String>,
     pub confidence: Option<f32>,
     pub attributes: Value,
 }
 
-pub fn normalize_event(
-    event: &Event,
-    raw_event_id: String,
-    ingest_timestamp_ms: u64,
-) -> CanonicalEvent {
+pub fn normalize_event(event: &Event, raw_event_id: String) -> CanonicalEvent {
     let data = &event.data;
     let source = event.source.clone();
     let tid = data.get("tid").and_then(|v| v.as_u64());
-    let uid = data.get("uid").and_then(|v| v.as_u64()).map(|v| v as u32);
     let ppid = data.get("ppid").and_then(|v| v.as_u64()).map(|v| v as u32);
 
     let mut method = data
@@ -199,9 +179,7 @@ pub fn normalize_event(
     CanonicalEvent {
         schema_version: 1,
         event_id: format!("canon-{}", raw_event_id),
-        raw_event_id,
         timestamp_ms: event.timestamp,
-        ingest_timestamp_ms,
         source,
         kind,
         severity,
@@ -209,9 +187,7 @@ pub fn normalize_event(
         pid: Some(event.pid),
         tid,
         ppid,
-        uid,
         comm: Some(event.comm.clone()),
-        container_id: None,
         host,
         method,
         path,
@@ -219,10 +195,6 @@ pub fn normalize_event(
         provider,
         model,
         request_id,
-        trace_id: None,
-        session_id: None,
-        conversation_id: None,
-        parent_event_id: None,
         confidence: Some(0.75),
         attributes: data.clone(),
     }
@@ -349,7 +321,7 @@ mod tests {
                 "body": "{\"model\":\"claude-sonnet-4-20250514\"}"
             }),
         );
-        let canonical = normalize_event(&event, "raw-1".to_string(), 2);
+        let canonical = normalize_event(&event, "raw-1".to_string());
         assert_eq!(canonical.kind, EventKind::LlmRequest);
         assert_eq!(canonical.provider.as_deref(), Some("anthropic"));
         assert_eq!(canonical.model.as_deref(), Some("claude-sonnet-4-20250514"));

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-use super::common::{AnalyzerProcessor, BinaryExecutor, current_boot_time_ns, parse_error_event};
+use super::common::{AnalyzerProcessor, BinaryExecutor, current_boot_time_ns, parse_json_event};
 use super::{EventStream, Runner, RunnerError};
 use crate::framework::analyzers::Analyzer;
 use crate::framework::core::Event;
@@ -67,25 +67,7 @@ impl ProcessRunner {
             );
         }
 
-        let Some(pid) = json_value
-            .get("pid")
-            .and_then(|v| v.as_u64())
-            .map(|p| p as u32)
-        else {
-            return parse_error_event("process", json_value, "missing pid", errors);
-        };
-        let Some(timestamp) = json_value.get("timestamp").and_then(|v| v.as_u64()) else {
-            return parse_error_event("process", json_value, "missing timestamp", errors);
-        };
-        let Some(comm) = json_value
-            .get("comm")
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-        else {
-            return parse_error_event("process", json_value, "missing comm", errors);
-        };
-
-        Event::new_with_timestamp(timestamp, "process".to_string(), pid, comm, json_value)
+        parse_json_event("process", "timestamp", json_value, errors)
     }
 }
 

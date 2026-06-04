@@ -198,7 +198,7 @@ pub(crate) fn process_age_s(proc_info: &ProcInfo, sample: &ProcSnapshot) -> f64 
     (sample.uptime_s - process_start_s).max(0.0)
 }
 
-pub(crate) fn agent_name_from_command(comm: &str, command: &str) -> String {
+pub(crate) fn agent_label_from_command(comm: &str, command: &str) -> String {
     known_agent_label(comm, command)
         .map(str::to_string)
         .unwrap_or_else(|| {

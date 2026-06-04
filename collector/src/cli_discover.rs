@@ -2,6 +2,7 @@
 // Copyright (c) 2026 eunomia-bpf org.
 
 use crate::output::{print_discovery, print_json};
+use crate::sources::agent_native;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -22,7 +23,7 @@ pub(crate) fn run_discover(json: bool) -> Result<(), Box<dyn std::error::Error +
         return Ok(());
     }
 
-    print_discovery(&rows, &crate::cli_db::count_local_sessions());
+    print_discovery(&rows, &agent_native::count_sessions());
     Ok(())
 }
 

@@ -110,6 +110,25 @@ pub fn parse_error_event(
     )
 }
 
+pub fn parse_json_event(
+    runner: &'static str,
+    timestamp_field: &'static str,
+    raw: serde_json::Value,
+    errors: &AtomicU64,
+) -> Event {
+    let Some(timestamp) = raw.get(timestamp_field).and_then(|v| v.as_u64()) else {
+        return parse_error_event(runner, raw, format!("missing {timestamp_field}"), errors);
+    };
+    let Some(pid) = raw.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32) else {
+        return parse_error_event(runner, raw, "missing pid", errors);
+    };
+    let Some(comm) = raw.get("comm").and_then(|v| v.as_str()).map(str::to_string) else {
+        return parse_error_event(runner, raw, "missing comm", errors);
+    };
+
+    Event::new_with_timestamp(timestamp, runner.to_string(), pid, comm, raw)
+}
+
 /// Common binary executor for runners - now supports streaming
 pub struct BinaryExecutor {
     binary_path: String,

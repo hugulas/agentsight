@@ -2,8 +2,8 @@
 // Copyright (c) 2026 eunomia-bpf org.
 
 use crate::view::types::{
-    AuditEventRow, LlmCallRow, NetworkTargetRow, ProcessNodeRow, ResourceSampleRow, SessionRow,
-    TokenUsageRow, ToolCallRow, ViewResult, ViewSink,
+    AuditEventRow, LlmCallRow, NetworkTargetRow, ProcessNodeRow, ResourceSampleRow, TokenUsageRow,
+    ToolCallRow, ViewResult, ViewSink,
 };
 use rusqlite::{Connection, OpenFlags, params};
 use serde_json::Value;
@@ -16,7 +16,6 @@ pub(crate) struct SqliteStore {
 impl SqliteStore {
     pub(crate) fn open(path: impl AsRef<Path>) -> ViewResult<Self> {
         let conn = Connection::open(path)?;
-        reject_legacy_raw_schema(&conn)?;
         let mut store = Self { conn };
         store.init()?;
         Ok(store)
@@ -24,7 +23,6 @@ impl SqliteStore {
 
     pub(crate) fn open_readonly(path: impl AsRef<Path>) -> ViewResult<Self> {
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-        reject_legacy_raw_schema(&conn)?;
         Ok(Self { conn })
     }
 
@@ -394,37 +392,6 @@ impl SqliteStore {
         })?;
         collect_rows(rows)
     }
-
-    pub(crate) fn session_rows(&self) -> ViewResult<Vec<SessionRow>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, agent_type, agent_name, pid, comm, start_timestamp_ms,
-                    NULLIF(end_timestamp_ms, 0), status, model, input_tokens, output_tokens,
-                    total_tokens, view_source, confidence, attributes_json
-             FROM agent_sessions
-             ORDER BY start_timestamp_ms, id",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            let attributes_json: String = row.get(14)?;
-            Ok(SessionRow {
-                id: row.get(0)?,
-                agent_type: row.get(1)?,
-                agent_name: row.get(2)?,
-                pid: row.get::<_, Option<i64>>(3)?.map(|v| v as u32),
-                comm: row.get(4)?,
-                start_timestamp_ms: row.get::<_, i64>(5)? as u64,
-                end_timestamp_ms: row.get::<_, Option<i64>>(6)?.map(|v| v as u64),
-                status: row.get(7)?,
-                model: row.get(8)?,
-                input_tokens: row.get(9)?,
-                output_tokens: row.get(10)?,
-                total_tokens: row.get(11)?,
-                view_source: row.get(12)?,
-                confidence: row.get(13)?,
-                attributes: parse_json_value(&attributes_json),
-            })
-        })?;
-        collect_rows(rows)
-    }
 }
 
 impl ViewSink for SqliteStore {
@@ -513,31 +480,6 @@ where
         out.push(row?);
     }
     Ok(out)
-}
-
-fn reject_legacy_raw_schema(conn: &Connection) -> ViewResult<()> {
-    let has_raw = sqlite_table_exists(conn, "raw_events")?;
-    let has_canonical = sqlite_table_exists(conn, "canonical_events")?;
-    let has_materialized = sqlite_table_exists(conn, "llm_calls")?
-        || sqlite_table_exists(conn, "token_usage")?
-        || sqlite_table_exists(conn, "audit_events")?;
-    if (has_raw || has_canonical) && !has_materialized {
-        return Err(
-            "legacy raw-event SQLite schema is no longer supported; capture into a fresh view database"
-                .into(),
-        );
-    }
-    Ok(())
-}
-
-fn sqlite_table_exists(conn: &Connection, table: &str) -> ViewResult<bool> {
-    Ok(conn.query_row(
-        "SELECT EXISTS(
-            SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1
-        )",
-        params![table],
-        |row| row.get::<_, i64>(0),
-    )? != 0)
 }
 
 fn network_target_id(target: &NetworkTargetRow) -> String {
@@ -645,24 +587,6 @@ CREATE TABLE IF NOT EXISTS process_nodes (
 
 CREATE INDEX IF NOT EXISTS idx_process_nodes_pid ON process_nodes(pid);
 CREATE INDEX IF NOT EXISTS idx_process_nodes_parent ON process_nodes(ppid);
-
-CREATE TABLE IF NOT EXISTS agent_sessions (
-  id TEXT PRIMARY KEY,
-  agent_type TEXT NOT NULL,
-  agent_name TEXT,
-  pid INTEGER,
-  comm TEXT,
-  start_timestamp_ms INTEGER NOT NULL,
-  end_timestamp_ms INTEGER,
-  status TEXT NOT NULL DEFAULT 'active',
-  model TEXT,
-  input_tokens INTEGER DEFAULT 0,
-  output_tokens INTEGER DEFAULT 0,
-  total_tokens INTEGER DEFAULT 0,
-  view_source TEXT NOT NULL,
-  confidence REAL,
-  attributes_json TEXT NOT NULL DEFAULT '{}'
-);
 
 CREATE TABLE IF NOT EXISTS tool_calls (
   id TEXT PRIMARY KEY,

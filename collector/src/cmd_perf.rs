@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
+use crate::cli_db::load_agentsight_view;
 use crate::output::{
     AgentTopOutput, AgentTopRow, ResourcePeaks, StatOutput, TopOptions, TopSection, clear_screen,
     print_agent_top, print_json, print_stat, sorted_top_counts, top_counts_from_iter,
 };
-use crate::sources::sqlite::load_view as load_sqlite_view;
 use crate::text::short_session_id;
-use crate::view::types::{AuditCounters, SessionRow, Snapshot, SnapshotOptions, ViewResult};
+use crate::view::types::{
+    AuditCounters, ResourceSampleRow, SessionRow, Snapshot, SnapshotOptions, ViewResult,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
 use std::time::Duration;
@@ -16,7 +18,7 @@ mod live;
 pub(crate) use live::{run_live_top_query, run_live_top_tui};
 
 #[cfg(test)]
-use crate::sources::session as local_sessions;
+use crate::sources::agent_native as agent_native_sessions;
 
 pub(crate) fn run_stat_query(
     db: &str,
@@ -65,12 +67,12 @@ pub(crate) fn run_top_query(
 }
 
 fn load_stat(db: &str) -> ViewResult<StatOutput> {
-    let view = load_sqlite_view(db)?;
+    let view = load_agentsight_view(Some(db))?;
     let snapshot = view.export_snapshot(SnapshotOptions {
         audit_limit: 50_000,
     });
-    let resources = resource_peaks_from_samples(view.resource_samples());
-    let tool_calls = view.tool_call_count();
+    let resources = resource_peaks_from_samples(&snapshot.resource_samples);
+    let tool_calls = snapshot.tool_calls.len() as i64;
     let audit = AuditCounters::from_rows(&snapshot.audit_events);
 
     let network_hosts = snapshot
@@ -205,31 +207,25 @@ fn session_agent_rows(
     let rows = snapshot
         .sessions
         .iter()
-        .filter(|session| options.matches(None, session.comm.as_deref(), None))
+        .filter(|session| options.matches(None, Some(&session.agent_type), None))
         .map(|session| AgentTopRow {
             session: short_session_id(&session.id),
-            agent: session
-                .agent_name
-                .clone()
-                .unwrap_or_else(|| session.agent_type.clone()),
-            pid: session.pid,
+            agent: session.agent_type.clone(),
+            pid: None,
             model: session.model.clone().or_else(|| top_model.clone()),
             age_s: session_age_s(session, snapshot),
             cpu_percent: resources.max_cpu_percent,
             rss_mb: resources.max_rss_mb,
             processes: 0,
             tokens: (session.total_tokens > 0).then_some(session.total_tokens),
-            tools: 0,
+            tools: tools_for_session(snapshot, &session.id),
             execs: 0,
             failures: 0,
             files: 0,
             network: 0,
             unattributed: 0,
             trace: "db".to_string(),
-            command: session
-                .comm
-                .clone()
-                .unwrap_or_else(|| session.agent_type.clone()),
+            command: session.agent_type.clone(),
         })
         .collect::<Vec<_>>();
     if !rows.is_empty() {
@@ -283,14 +279,9 @@ fn saved_session_row(
     Some(AgentTopRow {
         session: "db".to_string(),
         agent: snapshot
-            .agents
+            .sessions
             .first()
-            .map(|agent| {
-                agent
-                    .agent_name
-                    .clone()
-                    .unwrap_or_else(|| agent.agent_type.clone())
-            })
+            .map(|session| session.agent_type.clone())
             .unwrap_or_else(|| "saved".to_string()),
         pid: (pids.len() == 1).then(|| *pids.iter().next().unwrap()),
         model: top_model,
@@ -299,7 +290,7 @@ fn saved_session_row(
         rss_mb: resources.max_rss_mb,
         processes: pids.len(),
         tokens: (total_tokens > 0).then_some(total_tokens),
-        tools: 0,
+        tools: snapshot.tool_calls.len(),
         execs: audit.process_execs,
         failures: audit.process_exit_failure,
         files: audit.unique_files.len(),
@@ -316,6 +307,14 @@ fn network_target_counts(snapshot: &Snapshot) -> BTreeMap<String, i64> {
         *counts.entry(target.host.clone()).or_default() += target.count.max(0);
     }
     counts
+}
+
+fn tools_for_session(snapshot: &Snapshot, session_id: &str) -> usize {
+    snapshot
+        .tool_calls
+        .iter()
+        .filter(|tool| tool.session_id.as_deref() == Some(session_id))
+        .count()
 }
 
 fn sort_agent_rows(rows: &mut [AgentTopRow], sort: &str) {
@@ -350,23 +349,23 @@ fn sort_agent_rows(rows: &mut [AgentTopRow], sort: &str) {
 }
 
 fn load_snapshot_and_resources(db: &str) -> ViewResult<(Snapshot, ResourcePeaks)> {
-    let view = load_sqlite_view(db)?;
+    let view = load_agentsight_view(Some(db))?;
     let snapshot = view.export_snapshot(SnapshotOptions {
         audit_limit: 50_000,
     });
-    let resources = resource_peaks_from_samples(view.resource_samples());
+    let resources = resource_peaks_from_samples(&snapshot.resource_samples);
     Ok((snapshot, resources))
 }
 
-fn resource_peaks_from_samples(samples: Vec<(Option<f64>, Option<i64>)>) -> ResourcePeaks {
+fn resource_peaks_from_samples(samples: &[ResourceSampleRow]) -> ResourcePeaks {
     let mut peaks = ResourcePeaks::default();
-    for (cpu, rss_mb) in samples {
-        if let Some(cpu) = cpu
+    for sample in samples {
+        if let Some(cpu) = sample.cpu_percent
             && cpu >= peaks.max_cpu_percent
         {
             peaks.max_cpu_percent = cpu;
         }
-        if let Some(rss_mb) = rss_mb.map(|v| v.max(0) as u64)
+        if let Some(rss_mb) = sample.rss_mb.map(|v| v.max(0) as u64)
             && rss_mb >= peaks.max_rss_mb
         {
             peaks.max_rss_mb = rss_mb;
@@ -427,7 +426,7 @@ mod tests {
 
     #[test]
     fn stat_tokens_ignore_touched_local_log_without_usage() {
-        let (_temp, path) = local_sessions::create_temp_session_path("claude");
+        let (_temp, path) = agent_native_sessions::create_temp_session_path("claude");
         std::fs::write(
             &path,
             "{\"type\":\"user\",\"message\":{\"content\":\"local prompt only\"}}\n",

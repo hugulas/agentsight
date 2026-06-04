@@ -9,9 +9,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::text::{short_session_id, truncate_text};
 use crate::view::MaterializedView;
-use crate::view::types::{SessionRow, Snapshot, SnapshotOptions, TokenUsageRow, ToolCallRow};
-
-pub(crate) const AGENT_NATIVE_SOURCE: &str = "agent_native_session";
+use crate::view::types::{
+    AGENT_NATIVE_SOURCE, SessionRow, Snapshot, SnapshotOptions, TokenUsageRow, ToolCallRow,
+};
 
 pub(crate) struct SessionCache {
     entries: HashMap<PathBuf, CacheEntry>,
@@ -49,15 +49,15 @@ impl SessionCache {
 
     pub(crate) fn snapshot(
         &mut self,
-        options: &crate::output::TopOptions,
+        pid_filter: Option<u32>,
+        text_filter: Option<&str>,
         limit: usize,
+        max_age: Duration,
     ) -> Snapshot {
-        self.refresh(limit);
         let filtered: Vec<LocalSession> = self
-            .cached_sessions
-            .iter()
-            .filter(|s| matches_filter(s, options.pid, options.comm.as_deref()))
-            .cloned()
+            .discover_cached(limit, max_age)
+            .into_iter()
+            .filter(|s| matches_filter(s, pid_filter, text_filter))
             .collect();
         materialized_view(&filtered).export_snapshot(SnapshotOptions { audit_limit: 0 })
     }
@@ -117,52 +117,21 @@ impl SessionCache {
 
 #[derive(Debug, Clone)]
 pub(crate) struct LocalSession {
-    pub(crate) agent: String,
-    pub(crate) display_id: String,
-    pub(crate) path: PathBuf,
-    pub(crate) updated: SystemTime,
-    pub(crate) model: Option<String>,
-    pub(crate) input_tokens: i64,
-    pub(crate) output_tokens: i64,
-    pub(crate) total_tokens: i64,
-    pub(crate) models: BTreeMap<String, (i64, i64, i64)>,
-    pub(crate) tools: BTreeMap<String, usize>,
-    pub(crate) prompt_preview: Option<String>,
-    pub(crate) duration_ms: u64,
+    agent: String,
+    display_id: String,
+    path: PathBuf,
+    updated: SystemTime,
+    model: Option<String>,
+    input_tokens: i64,
+    output_tokens: i64,
+    total_tokens: i64,
+    models: BTreeMap<String, (i64, i64, i64)>,
+    tools: BTreeMap<String, usize>,
+    prompt_preview: Option<String>,
+    duration_ms: u64,
 }
 
-pub(crate) fn discover(limit: usize) -> Vec<LocalSession> {
-    let mut candidates = Vec::new();
-    for (agent, dir) in local_session_dirs() {
-        walk_jsonl(&dir, &mut |path, meta| {
-            candidates.push((
-                meta.modified().unwrap_or(UNIX_EPOCH),
-                agent,
-                path.to_path_buf(),
-            ));
-        });
-    }
-    candidates.sort_by_key(|(updated, _, _)| std::cmp::Reverse(*updated));
-
-    let mut sessions = Vec::new();
-    let mut seen = HashSet::new();
-    let target = limit.clamp(1, 25);
-    let scan = target.saturating_mul(3).clamp(10, 75);
-    for (updated, agent, path) in candidates.into_iter().take(scan) {
-        let Some(session) = read_session_path_with_source(agent, &path, updated) else {
-            continue;
-        };
-        if seen.insert(session.display_id.clone()) {
-            sessions.push(session);
-        }
-        if sessions.len() >= target {
-            break;
-        }
-    }
-    sessions
-}
-
-pub(crate) fn view_id(session: &LocalSession) -> String {
+fn view_id(session: &LocalSession) -> String {
     format!("local:{}:{}", session.agent, session.display_id)
 }
 
@@ -173,15 +142,12 @@ pub(crate) fn materialized_view(sessions: &[LocalSession]) -> MaterializedView {
     view
 }
 
-pub(crate) fn recent_view(limit: usize) -> Option<MaterializedView> {
-    let sessions = discover(limit);
-    (!sessions.is_empty()).then(|| materialized_view(&sessions))
+pub(crate) fn import_recent(view: &mut MaterializedView, limit: usize) {
+    let sessions = SessionCache::new().discover_cached(limit, Duration::ZERO);
+    import_into_view(view, &sessions);
 }
 
 pub(crate) fn import_into_view(view: &mut MaterializedView, sessions: &[LocalSession]) {
-    if !sessions.is_empty() {
-        view.set_source(AGENT_NATIVE_SOURCE);
-    }
     for session in sessions {
         view.load_session(session_row(session));
         for row in token_rows(session) {
@@ -197,9 +163,6 @@ fn session_row(session: &LocalSession) -> SessionRow {
     SessionRow {
         id: view_id(session),
         agent_type: session.agent.clone(),
-        agent_name: Some(session.agent.clone()),
-        pid: None,
-        comm: Some(session.agent.clone()),
         start_timestamp_ms: updated_ms(session).saturating_sub(session.duration_ms),
         end_timestamp_ms: Some(updated_ms(session)),
         status: "observed".to_string(),
@@ -213,7 +176,6 @@ fn session_row(session: &LocalSession) -> SessionRow {
             "path": session.path.to_string_lossy(),
             "display_id": session.display_id,
             "prompt_preview": session.prompt_preview.clone(),
-            "tools_total": session.tools.values().sum::<usize>(),
         }),
     }
 }
@@ -288,7 +250,7 @@ fn sanitize_id(value: &str) -> String {
         .collect()
 }
 
-pub(crate) fn matches_filter(
+fn matches_filter(
     session: &LocalSession,
     pid_filter: Option<u32>,
     text_filter: Option<&str>,
@@ -316,7 +278,7 @@ pub(crate) fn matches_filter(
             .contains(&filter)
 }
 
-pub(crate) fn count_local_sessions() -> Vec<(&'static str, PathBuf, usize, u64)> {
+pub(crate) fn count_sessions() -> Vec<(&'static str, PathBuf, usize, u64)> {
     local_session_dirs()
         .into_iter()
         .filter_map(|(name, dir)| {
@@ -384,7 +346,17 @@ fn read_session_path_with_source(
     parse_content(agent, path, updated, &content)
 }
 
-pub(crate) fn parse_content(
+#[cfg(test)]
+pub(crate) fn parse_content_for_test(
+    agent: &str,
+    path: &Path,
+    updated: SystemTime,
+    content: &str,
+) -> Option<LocalSession> {
+    parse_content(agent, path, updated, content)
+}
+
+fn parse_content(
     agent: &str,
     path: &Path,
     updated: SystemTime,

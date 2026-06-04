@@ -10,8 +10,8 @@ use crate::output::{
     AgentTopOutput, AgentTopRow, TopOptions, clear_screen, draw_live_top_tui, next_view_key,
     print_agent_top, print_top_sudo_prompt,
 };
+use crate::sources::agent_native as agent_native_sessions;
 use crate::sources::proc::{self as procfs, ProcInfo, ProcSnapshot as LiveSample};
-use crate::sources::session as local_sessions;
 use crate::view::MaterializedView;
 use crate::view::types::{AuditCounters, SessionRow, Snapshot, SnapshotOptions};
 use crossterm::{
@@ -120,7 +120,7 @@ impl LiveSessionBindings {
     ) -> Option<&'static str> {
         let pid = row.pid?;
         let proc_info = sample.procs.get(&pid)?;
-        let path = local_sessions::normalize_session_log_path(session_path);
+        let path = agent_native_sessions::normalize_session_log_path(session_path);
 
         if let Some(evidence) = path_evidence.get(&pid) {
             if let Some(trace) = evidence.get(&path).copied() {
@@ -176,7 +176,7 @@ impl LiveEbpfCapture {
 struct LiveView {
     previous: Option<LiveSample>,
     bindings: LiveSessionBindings,
-    session_cache: local_sessions::SessionCache,
+    session_cache: agent_native_sessions::SessionCache,
     fd_cache: HashMap<(u32, u64), BTreeSet<PathBuf>>,
 }
 
@@ -185,7 +185,7 @@ impl Default for LiveView {
         Self {
             previous: None,
             bindings: LiveSessionBindings::default(),
-            session_cache: local_sessions::SessionCache::new(),
+            session_cache: agent_native_sessions::SessionCache::new(),
             fd_cache: HashMap::new(),
         }
     }
@@ -200,7 +200,12 @@ impl LiveView {
     ) -> io::Result<AgentTopOutput<'static>> {
         let sample = LiveSample::collect()?;
         let capture_snapshot = capture.map(LiveEbpfCapture::snapshot);
-        let session_snapshot = self.session_cache.snapshot(options, limit);
+        let session_snapshot = self.session_cache.snapshot(
+            options.pid,
+            options.comm.as_deref(),
+            limit,
+            Duration::from_secs(2),
+        );
         let mut top = self.build_top(
             &sample,
             capture_snapshot.as_ref(),
@@ -271,6 +276,11 @@ impl LiveView {
                 .as_ref()
                 .and_then(|(row, _)| row.age_s)
                 .or_else(|| session_age_s(session));
+            let tools = session_snapshot
+                .tool_calls
+                .iter()
+                .filter(|tool| tool.session_id.as_deref() == Some(session.id.as_str()))
+                .count();
             rows.push(AgentTopRow {
                 session: session_attr(session, "display_id")
                     .unwrap_or(session.id.as_str())
@@ -289,11 +299,7 @@ impl LiveView {
                     .map(|(row, _)| row.processes)
                     .unwrap_or_default(),
                 tokens: (session.total_tokens > 0).then_some(session.total_tokens),
-                tools: session
-                    .attributes
-                    .get("tools_total")
-                    .and_then(Value::as_u64)
-                    .unwrap_or_default() as usize,
+                tools,
                 execs: 0,
                 failures: 0,
                 files: 0,
@@ -584,7 +590,7 @@ fn session_path_from_process_event(data: &Value) -> Option<PathBuf> {
     };
     data.get(field)
         .and_then(|value| value.as_str())
-        .and_then(local_sessions::session_log_path_from_str)
+        .and_then(agent_native_sessions::session_log_path_from_str)
 }
 
 pub(crate) async fn run_live_top_query(
@@ -872,7 +878,9 @@ fn scan_proc_fd_session_paths(pid: u32) -> BTreeSet<PathBuf> {
         let Ok(target) = fs::read_link(entry.path()) else {
             continue;
         };
-        if let Some(path) = local_sessions::session_log_path_from_str(&target.to_string_lossy()) {
+        if let Some(path) =
+            agent_native_sessions::session_log_path_from_str(&target.to_string_lossy())
+        {
             out.insert(path);
         }
     }
@@ -952,7 +960,7 @@ fn live_process_rows(
             .filter_map(|pid| sample.procs.get(pid).map(|proc_info| proc_info.rss_mb))
             .sum();
         let agent = root
-            .map(|proc_info| procfs::agent_name_from_command(&proc_info.comm, &proc_info.command))
+            .map(|proc_info| procfs::agent_label_from_command(&proc_info.comm, &proc_info.command))
             .unwrap_or_else(|| "agent".to_string());
 
         rows.push(AgentTopRow {
@@ -1066,8 +1074,8 @@ mod tests {
 
     #[test]
     fn record_live_ebpf_event_tracks_only_resolved_session_paths() {
-        let (_claude_temp, claude_path) = local_sessions::create_temp_session_path("claude");
-        let (_codex_temp, codex_path) = local_sessions::create_temp_session_path("codex");
+        let (_claude_temp, claude_path) = agent_native_sessions::create_temp_session_path("claude");
+        let (_codex_temp, codex_path) = agent_native_sessions::create_temp_session_path("codex");
         let state = Arc::new(Mutex::new(LiveCaptureState::default()));
 
         for (pid, comm, data) in [
@@ -1126,30 +1134,28 @@ mod tests {
         assert_eq!(counters.get(&42).unwrap().files, 1);
         assert_eq!(counters.get(&7).unwrap().files, 1);
         assert_eq!(counters.get(&9).unwrap().files, 1);
-        assert!(
-            snapshot.session_paths_by_pid[&42]
-                .contains(&local_sessions::normalize_session_log_path(&claude_path))
-        );
-        assert!(
-            snapshot.session_paths_by_pid[&7]
-                .contains(&local_sessions::normalize_session_log_path(&codex_path))
-        );
+        assert!(snapshot.session_paths_by_pid[&42].contains(
+            &agent_native_sessions::normalize_session_log_path(&claude_path)
+        ));
+        assert!(snapshot.session_paths_by_pid[&7].contains(
+            &agent_native_sessions::normalize_session_log_path(&codex_path)
+        ));
         assert!(!snapshot.session_paths_by_pid.contains_key(&9));
     }
 
     #[test]
     fn proc_fd_scan_finds_open_session_jsonl() {
-        let (_temp, path) = local_sessions::create_temp_session_path("claude");
+        let (_temp, path) = agent_native_sessions::create_temp_session_path("claude");
         let _file = File::open(&path).unwrap();
 
         let paths = scan_proc_fd_session_paths(std::process::id());
-        assert!(paths.contains(&local_sessions::normalize_session_log_path(&path)));
+        assert!(paths.contains(&agent_native_sessions::normalize_session_log_path(&path)));
     }
 
     #[test]
     fn local_session_binding_sticks_after_initial_path_evidence() {
-        let (_temp, path) = local_sessions::create_temp_session_path("claude");
-        let session_path = local_sessions::normalize_session_log_path(&path);
+        let (_temp, path) = agent_native_sessions::create_temp_session_path("claude");
+        let session_path = agent_native_sessions::normalize_session_log_path(&path);
         let row = AgentTopRow {
             session: "proc:1".to_string(),
             agent: "claude".to_string(),
@@ -1201,17 +1207,17 @@ mod tests {
     }
 
     #[test]
-    fn pid_filter_does_not_show_unbound_local_sessions() {
-        let (_temp, path) = local_sessions::create_temp_session_path("claude");
-        let session = local_sessions::parse_content(
+    fn pid_filter_does_not_show_unbound_agent_native_sessions() {
+        let (_temp, path) = agent_native_sessions::create_temp_session_path("claude");
+        let session = agent_native_sessions::parse_content_for_test(
             "claude",
             &path,
             std::time::UNIX_EPOCH,
             "{\"type\":\"result\",\"modelUsage\":{\"claude-opus\":{\"inputTokens\":3,\"outputTokens\":4}}}\n",
         )
         .unwrap();
-        let local_sessions = vec![session];
-        let session_snapshot = local_sessions::materialized_view(&local_sessions)
+        let agent_native_sessions = vec![session];
+        let session_snapshot = agent_native_sessions::materialized_view(&agent_native_sessions)
             .export_snapshot(SnapshotOptions { audit_limit: 10 });
         let options = TopOptions {
             pid: Some(1),

@@ -92,18 +92,6 @@ fn gemini_token_total(db: &std::path::Path) -> i64 {
     .expect("token query should run")
 }
 
-fn positive_session_total(db: &std::path::Path, agent_type: &str) -> i64 {
-    let conn = Connection::open(db).expect("db should open");
-    conn.query_row(
-        "SELECT COALESCE(SUM(total_tokens), 0)
-         FROM agent_sessions
-         WHERE agent_type = ?1 AND total_tokens > 0",
-        [agent_type],
-        |row| row.get(0),
-    )
-    .expect("session query should run")
-}
-
 fn stat_total_tokens(db: &std::path::Path) -> i64 {
     let db = db.to_str().expect("db path");
     let output = run_agentsight_user(&["stat", "--db", db, "--json"]);
@@ -146,7 +134,6 @@ fn real_gemini_cli_smoke_captures_http_tokens() {
     }
 
     let mut last_response_total = 0;
-    let mut last_session_total = 0;
     for attempt in 1..=3 {
         let temp = tempfile::tempdir().expect("tempdir");
         let db = temp.path().join("gemini.db");
@@ -175,13 +162,12 @@ fn real_gemini_cli_smoke_captures_http_tokens() {
         assert_agentsight_success(output, "real Gemini smoke");
 
         last_response_total = gemini_token_total(&db);
-        last_session_total = positive_session_total(&db, "gemini-cli");
-        if last_response_total > 0 && last_session_total > 0 {
+        if last_response_total > 0 {
             return;
         }
         eprintln!(
-            "Gemini smoke attempt {} did not capture all signals: response={}, session={}",
-            attempt, last_response_total, last_session_total
+            "Gemini smoke attempt {} did not capture token usage: response={}",
+            attempt, last_response_total
         );
     }
 
@@ -189,7 +175,6 @@ fn real_gemini_cli_smoke_captures_http_tokens() {
         last_response_total > 0,
         "Gemini token usage should be decoded from TLS/SSE or captured CLI stdout stats"
     );
-    assert!(last_session_total > 0);
 }
 
 #[test]
@@ -395,5 +380,5 @@ fn real_openclaw_provider_smoke_captures_http_tokens() {
 
     assert_agentsight_success(trigger, "trigger OpenClaw inference");
     assert!(trace_status.success(), "agentsight trace failed");
-    assert!(positive_session_total(&db, "openclaw") > 0);
+    assert!(stat_total_tokens(&db) > 0);
 }

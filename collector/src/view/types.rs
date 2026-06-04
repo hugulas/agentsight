@@ -7,6 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub type ViewResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
+pub(crate) const AGENT_NATIVE_SOURCE: &str = "agent_native_session";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenSummary {
     pub group: String,
@@ -72,7 +74,7 @@ pub struct Snapshot {
     pub audit_events: Vec<AuditEventRow>,
     pub resource_samples: Vec<ResourceSampleRow>,
     pub sessions: Vec<SessionRow>,
-    pub agents: Vec<AgentRow>,
+    pub tool_calls: Vec<ToolCallRow>,
 }
 
 impl Snapshot {
@@ -87,7 +89,7 @@ impl Snapshot {
             audit_events: Vec::new(),
             resource_samples: Vec::new(),
             sessions: Vec::new(),
-            agents: Vec::new(),
+            tool_calls: Vec::new(),
         }
     }
 }
@@ -271,9 +273,6 @@ pub struct ToolCallRow {
 pub struct SessionRow {
     pub id: String,
     pub agent_type: String,
-    pub agent_name: Option<String>,
-    pub pid: Option<u32>,
-    pub comm: Option<String>,
     pub start_timestamp_ms: u64,
     pub end_timestamp_ms: Option<u64>,
     pub status: String,
@@ -284,17 +283,6 @@ pub struct SessionRow {
     pub view_source: String,
     pub confidence: Option<f64>,
     pub attributes: Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentRow {
-    pub agent_type: String,
-    pub agent_name: Option<String>,
-    pub sessions: i64,
-    pub input_tokens: i64,
-    pub output_tokens: i64,
-    pub total_tokens: i64,
-    pub last_seen_ms: Option<u64>,
 }
 
 pub trait ViewSink: Send {

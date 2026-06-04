@@ -12,7 +12,6 @@ import { LanguageSwitcher } from '@/components/common/LanguageSwitcher';
 import { useTranslation } from '@/i18n';
 import {
   AgentSightSnapshot,
-  snapshotEventCount,
   snapshotToViewEvents,
 } from '@/types/event';
 
@@ -41,7 +40,7 @@ export default function Home() {
   const [error, setError] = useState<string>('');
 
   const viewEvents = useMemo(() => snapshotToViewEvents(snapshot), [snapshot]);
-  const eventCount = snapshotEventCount(snapshot);
+  const eventCount = viewEvents.length;
 
   const syncData = useCallback(async () => {
     setSyncing(true);

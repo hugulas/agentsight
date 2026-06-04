@@ -4,11 +4,10 @@
 mod projection;
 pub mod types;
 
-use crate::sources::session::AGENT_NATIVE_SOURCE;
 use crate::view::types::{
-    AgentRow, AuditEventRow, LlmCallRow, NetworkTargetRow, ProcessNodeRow, ResourceSampleRow,
-    SessionRow, Snapshot, SnapshotOptions, SnapshotSummary, TokenSummary, TokenUsageRow,
-    ToolCallRow, ViewResult, ViewSink,
+    AGENT_NATIVE_SOURCE, AuditEventRow, LlmCallRow, NetworkTargetRow, ProcessNodeRow,
+    ResourceSampleRow, SessionRow, Snapshot, SnapshotOptions, SnapshotSummary, TokenSummary,
+    TokenUsageRow, ToolCallRow, ViewResult, ViewSink,
 };
 use chrono::{SecondsFormat, Utc};
 use serde_json::Value;
@@ -264,7 +263,7 @@ impl MaterializedView {
             audit_events: self.audit_events(options.audit_limit),
             resource_samples: self.resource_sample_rows(),
             sessions: self.sessions(),
-            agents: self.agents(),
+            tool_calls: self.tool_calls.values().cloned().collect(),
         }
     }
 
@@ -391,38 +390,6 @@ impl MaterializedView {
         rows
     }
 
-    pub(crate) fn first_tool_timestamp_ms(&self) -> Option<u64> {
-        self.tool_calls.values().map(|row| row.timestamp_ms).min()
-    }
-
-    pub(crate) fn tool_call_count(&self) -> i64 {
-        self.tool_calls.len() as i64
-    }
-
-    pub(crate) fn tool_counts(&self) -> BTreeMap<String, usize> {
-        let mut counts = BTreeMap::new();
-        for row in self.tool_calls.values() {
-            *counts
-                .entry(row.tool_name.clone().unwrap_or_else(|| "?".to_string()))
-                .or_default() += 1;
-        }
-        counts
-    }
-
-    pub(crate) fn tool_durations_ms(&self) -> Vec<u64> {
-        self.tool_calls
-            .values()
-            .filter_map(|row| row.duration_ms)
-            .collect()
-    }
-
-    pub(crate) fn resource_samples(&self) -> Vec<(Option<f64>, Option<i64>)> {
-        self.resource_samples
-            .iter()
-            .map(|row| (row.cpu_percent, row.rss_mb))
-            .collect()
-    }
-
     fn resource_sample_rows(&self) -> Vec<ResourceSampleRow> {
         let mut rows = self.resource_samples.clone();
         rows.sort_by(|a, b| {
@@ -475,37 +442,6 @@ impl MaterializedView {
                 .then_with(|| a.id.cmp(&b.id))
         });
         rows
-    }
-
-    fn agents(&self) -> Vec<AgentRow> {
-        let mut agents: BTreeMap<String, AgentRow> = BTreeMap::new();
-        for session in self.sessions.values() {
-            let entry = agents
-                .entry(session.agent_type.clone())
-                .or_insert(AgentRow {
-                    agent_type: session.agent_type.clone(),
-                    agent_name: session.agent_name.clone(),
-                    sessions: 0,
-                    input_tokens: 0,
-                    output_tokens: 0,
-                    total_tokens: 0,
-                    last_seen_ms: None,
-                });
-            if session.agent_name > entry.agent_name {
-                entry.agent_name = session.agent_name.clone();
-            }
-            entry.sessions += 1;
-            entry.input_tokens += session.input_tokens;
-            entry.output_tokens += session.output_tokens;
-            entry.total_tokens += session.total_tokens;
-            entry.last_seen_ms = max_optional(
-                entry.last_seen_ms,
-                session
-                    .end_timestamp_ms
-                    .or(Some(session.start_timestamp_ms)),
-            );
-        }
-        agents.into_values().collect()
     }
 
     fn view_events(&self) -> i64 {

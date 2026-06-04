@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-use super::common::{AnalyzerProcessor, BinaryExecutor, parse_error_event};
+use super::common::{AnalyzerProcessor, BinaryExecutor, parse_json_event};
 use super::{EventStream, Runner, RunnerError};
 use crate::framework::analyzers::Analyzer;
-use crate::framework::core::Event;
 use async_trait::async_trait;
 use futures::stream::StreamExt;
 use std::path::Path;
@@ -14,7 +13,6 @@ use std::sync::{Arc, atomic::AtomicU64};
 pub struct SslRunner {
     analyzers: Vec<Box<dyn Analyzer>>,
     executor: BinaryExecutor,
-    additional_args: Vec<String>,
 }
 
 impl SslRunner {
@@ -24,7 +22,6 @@ impl SslRunner {
         Self {
             analyzers: Vec::new(),
             executor: BinaryExecutor::new(path_str).with_runner_name("SSL".to_string()),
-            additional_args: Vec::new(),
         }
     }
 
@@ -34,35 +31,15 @@ impl SslRunner {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        self.additional_args = args.into_iter().map(|s| s.as_ref().to_string()).collect();
-        // Update the executor with the additional args
+        let args = args
+            .into_iter()
+            .map(|s| s.as_ref().to_string())
+            .collect::<Vec<_>>();
         self.executor = self
             .executor
-            .with_args(&self.additional_args)
+            .with_args(&args)
             .with_runner_name("SSL".to_string());
         self
-    }
-
-    fn parse_ssl_event(json_value: serde_json::Value, errors: &AtomicU64) -> Event {
-        let Some(timestamp) = json_value.get("timestamp_ns").and_then(|v| v.as_u64()) else {
-            return parse_error_event("ssl", json_value, "missing timestamp_ns", errors);
-        };
-        let Some(pid) = json_value
-            .get("pid")
-            .and_then(|v| v.as_u64())
-            .map(|p| p as u32)
-        else {
-            return parse_error_event("ssl", json_value, "missing pid", errors);
-        };
-        let Some(comm) = json_value
-            .get("comm")
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-        else {
-            return parse_error_event("ssl", json_value, "missing comm", errors);
-        };
-
-        Event::new_with_timestamp(timestamp, "ssl".to_string(), pid, comm, json_value)
     }
 }
 
@@ -73,8 +50,8 @@ impl Runner for SslRunner {
         let json_stream = self.executor.get_json_stream().await?;
 
         let errors = Arc::new(AtomicU64::new(0));
-        let event_stream =
-            json_stream.map(move |json_value| Self::parse_ssl_event(json_value, &errors));
+        let event_stream = json_stream
+            .map(move |json_value| parse_json_event("ssl", "timestamp_ns", json_value, &errors));
 
         AnalyzerProcessor::process_through_analyzers(Box::pin(event_stream), &mut self.analyzers)
             .await
