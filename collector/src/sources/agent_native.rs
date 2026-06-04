@@ -129,6 +129,8 @@ pub(crate) struct LocalSession {
     tools: BTreeMap<String, usize>,
     prompt_preview: Option<String>,
     duration_ms: u64,
+    cwd: Option<String>,
+    last_message_at: Option<String>,
 }
 
 fn view_id(session: &LocalSession) -> String {
@@ -176,6 +178,8 @@ fn session_row(session: &LocalSession) -> SessionRow {
             "path": session.path.to_string_lossy(),
             "display_id": session.display_id,
             "prompt_preview": session.prompt_preview.clone(),
+            "cwd": session.cwd.clone(),
+            "last_message_at": session.last_message_at.clone(),
         }),
     }
 }
@@ -373,6 +377,8 @@ fn parse_content(
     let mut claude_seen_usage = HashSet::new();
     let mut tools = BTreeMap::new();
     let mut prompt_preview = None;
+    let mut cwd: Option<String> = None;
+    let mut last_message_at: Option<String> = None;
     let mut duration_ms = 0;
     let mut codex_model = String::new();
 
@@ -382,6 +388,17 @@ fn parse_content(
         };
         if let Some(id) = local_session_id(&obj) {
             session_id = id;
+        }
+        if cwd.is_none() {
+            cwd = obj
+                .get("cwd")
+                .and_then(Value::as_str)
+                .or_else(|| obj.pointer("/payload/cwd").and_then(Value::as_str))
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string);
+        }
+        if let Some(ts) = obj.get("timestamp").and_then(Value::as_str) {
+            last_message_at = Some(ts.to_string());
         }
         let typ = obj
             .get("type")
@@ -534,6 +551,8 @@ fn parse_content(
         tools,
         prompt_preview,
         duration_ms,
+        cwd,
+        last_message_at,
     })
 }
 

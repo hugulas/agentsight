@@ -208,24 +208,40 @@ fn session_agent_rows(
         .sessions
         .iter()
         .filter(|session| options.matches(None, Some(&session.agent_type), None))
-        .map(|session| AgentTopRow {
-            session: short_session_id(&session.id),
-            agent: session.agent_type.clone(),
-            pid: None,
-            model: session.model.clone().or_else(|| top_model.clone()),
-            age_s: session_age_s(session, snapshot),
-            cpu_percent: resources.max_cpu_percent,
-            rss_mb: resources.max_rss_mb,
-            processes: 0,
-            tokens: (session.total_tokens > 0).then_some(session.total_tokens),
-            tools: tools_for_session(snapshot, &session.id),
-            execs: 0,
-            failures: 0,
-            files: 0,
-            network: 0,
-            unattributed: 0,
-            trace: "db".to_string(),
-            command: session.agent_type.clone(),
+        .map(|session| {
+            let cwd = session
+                .attributes
+                .get("cwd")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string);
+            let last_msg = session
+                .attributes
+                .get("last_message_at")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string);
+            AgentTopRow {
+                session: short_session_id(&session.id),
+                agent: session.agent_type.clone(),
+                pid: None,
+                model: session.model.clone().or_else(|| top_model.clone()),
+                age_s: session_age_s(session, snapshot),
+                cpu_percent: resources.max_cpu_percent,
+                rss_mb: resources.max_rss_mb,
+                processes: 0,
+                tokens: (session.total_tokens > 0).then_some(session.total_tokens),
+                tools: tools_for_session(snapshot, &session.id),
+                execs: 0,
+                failures: 0,
+                files: 0,
+                network: 0,
+                unattributed: 0,
+                trace: "db".to_string(),
+                command: session.agent_type.clone(),
+                workspace: cwd,
+                last_message_at: last_msg,
+            }
         })
         .collect::<Vec<_>>();
     if !rows.is_empty() {
@@ -298,6 +314,8 @@ fn saved_session_row(
         unattributed: 0,
         trace: "db".to_string(),
         command: "saved session".to_string(),
+        workspace: None,
+        last_message_at: None,
     })
 }
 

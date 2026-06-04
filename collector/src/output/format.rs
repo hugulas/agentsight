@@ -112,6 +112,8 @@ pub(crate) struct AgentTopRow {
     pub(crate) unattributed: usize,
     pub(crate) trace: String,
     pub(crate) command: String,
+    pub(crate) workspace: Option<String>,
+    pub(crate) last_message_at: Option<String>,
 }
 
 impl AgentTopRow {
@@ -138,6 +140,20 @@ impl AgentTopRow {
     pub(crate) fn token_label(&self) -> String {
         self.tokens
             .map(format_count)
+            .unwrap_or_else(|| "-".to_string())
+    }
+
+    pub(crate) fn last_msg_label(&self) -> String {
+        self.last_message_at
+            .as_deref()
+            .and_then(format_iso_time_compact)
+            .unwrap_or_else(|| "-".to_string())
+    }
+
+    pub(crate) fn last_msg_relative_label(&self) -> String {
+        self.last_message_at
+            .as_deref()
+            .and_then(format_iso_time_relative)
             .unwrap_or_else(|| "-".to_string())
     }
 
@@ -522,28 +538,30 @@ pub(crate) fn print_agent_top(top: &AgentTopOutput<'_>) {
     );
     println!();
     println!(
-        "{:<18} {:<10} {:<8} {:>6} {:<18} {:>8} {:<30} {:<12} {:<12} CONTEXT",
-        "SESSION", "AGENT", "STATE", "AGE", "MODEL", "TOKENS", "ACTIVITY", "HEALTH", "EVIDENCE"
+        "{:<18} {:<10} {:<8} {:>6} {:>9} {:<18} {:>8} {:<20} {:<12} {:<12} {:<24} CONTEXT",
+        "SESSION", "AGENT", "STATE", "AGE", "LAST MSG", "MODEL", "TOKENS", "ACTIVITY", "HEALTH", "EVIDENCE", "WORKSPACE"
     );
     for row in &top.rows {
         println!(
-            "{:<18} {:<10} {:<8} {:>6} {:<18} {:>8} {:<30} {:<12} {:<12} {}",
+            "{:<18} {:<10} {:<8} {:>6} {:>9} {:<18} {:>8} {:<20} {:<12} {:<12} {:<24} {}",
             truncate(&row.session, 18),
             truncate(&row.agent, 10),
             row.state_label(),
             row.age_label(),
+            row.last_msg_label(),
             truncate(&row.model_label(), 18),
             row.token_label(),
-            truncate(&row.activity_label(), 30),
+            truncate(&row.activity_label(), 20),
             truncate(&row.health_label(), 12),
             truncate(&row.evidence_label(), 12),
+            truncate(row.workspace.as_deref().unwrap_or("-"), 24),
             truncate(&row.command, 48),
         );
     }
     if top.rows.is_empty() {
         println!(
-            "{:<18} {:<10} {:<8} {:>6} {:<18} {:>8} {:<30} {:<12} {:<12} -",
-            "-", "-", "-", "-", "-", "-", "-", "-", "-"
+            "{:<18} {:<10} {:<8} {:>6} {:>9} {:<18} {:>8} {:<20} {:<12} {:<12} {:<24} -",
+            "-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-"
         );
     }
     println!();
@@ -852,6 +870,19 @@ fn format_duration_compact(seconds: f64) -> String {
     }
 }
 
+fn format_iso_time_relative(iso: &str) -> Option<String> {
+    let dt = chrono::DateTime::parse_from_rfc3339(iso).ok()?;
+    let ago = chrono::Utc::now().signed_duration_since(dt);
+    let secs = ago.num_seconds().max(0) as f64;
+    Some(format_duration_compact(secs))
+}
+
+fn format_iso_time_compact(iso: &str) -> Option<String> {
+    let dt = chrono::DateTime::parse_from_rfc3339(iso).ok()?;
+    let local = dt.with_timezone(&chrono::Local);
+    Some(local.format("%H:%M:%S").to_string())
+}
+
 fn prompt_preview(value: &Value, max: usize) -> String {
     let text = extract_prompt_text(value).unwrap_or_else(|| value.to_string());
     truncate(&text.split_whitespace().collect::<Vec<_>>().join(" "), max)
@@ -916,6 +947,8 @@ mod tests {
             unattributed: 0,
             trace: trace.to_string(),
             command: "codex".to_string(),
+            workspace: None,
+            last_message_at: None,
         }
     }
 

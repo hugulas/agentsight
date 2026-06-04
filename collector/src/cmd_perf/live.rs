@@ -281,6 +281,13 @@ impl LiveView {
                 .iter()
                 .filter(|tool| tool.session_id.as_deref() == Some(session.id.as_str()))
                 .count();
+            let workspace = session_attr(session, "cwd")
+                .map(ToString::to_string)
+                .or_else(|| {
+                    live.as_ref()
+                        .and_then(|(row, _)| row.pid)
+                        .and_then(proc_cwd)
+                });
             rows.push(AgentTopRow {
                 session: session_attr(session, "display_id")
                     .unwrap_or(session.id.as_str())
@@ -307,14 +314,74 @@ impl LiveView {
                 unattributed: 0,
                 trace,
                 command,
+                workspace,
+                last_message_at: session_attr(session, "last_message_at")
+                    .map(ToString::to_string),
             });
         }
 
-        rows.extend(live_rows.into_iter().filter(|row| {
-            row.pid
-                .map(|pid| !used_live_pids.contains(&pid))
-                .unwrap_or(true)
-        }));
+        let remaining_live: Vec<_> = live_rows
+            .into_iter()
+            .filter(|row| {
+                row.pid
+                    .map(|pid| !used_live_pids.contains(&pid))
+                    .unwrap_or(true)
+            })
+            .collect();
+
+        // Best-effort merge: bind unmatched live processes to unmatched
+        // agent-native sessions of the same type, matched by recency. This
+        // covers runtimes like Bun (Claude) that don't keep the session JSONL
+        // file open as an fd, so the proc_fd/eBPF-file binding path doesn't
+        // fire immediately.
+        let mut merged_live_pids = HashSet::new();
+        let mut merged_agent_indices = HashSet::new();
+        let mut live_by_recency: Vec<_> = remaining_live
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.pid.is_some())
+            .collect();
+        live_by_recency.sort_by(|(_, a), (_, b)| {
+            a.age_s
+                .partial_cmp(&b.age_s)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        for (_, live_row) in &live_by_recency {
+            let best = rows
+                .iter()
+                .enumerate()
+                .filter(|(idx, row)| {
+                    row.trace == "agent-native"
+                        && row.agent == live_row.agent
+                        && row.pid.is_none()
+                        && !merged_agent_indices.contains(idx)
+                })
+                .min_by(|(_, a), (_, b)| {
+                    a.age_s
+                        .partial_cmp(&b.age_s)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .map(|(idx, _)| idx);
+            if let Some(idx) = best {
+                let agent_row = &mut rows[idx];
+                agent_row.pid = live_row.pid;
+                agent_row.cpu_percent = live_row.cpu_percent;
+                agent_row.rss_mb = live_row.rss_mb;
+                agent_row.processes = live_row.processes;
+                agent_row.trace = "agent-native+proc".to_string();
+                if agent_row.age_s.is_none() {
+                    agent_row.age_s = live_row.age_s;
+                }
+                merged_live_pids.insert(live_row.pid.unwrap());
+                merged_agent_indices.insert(idx);
+            }
+        }
+        rows.extend(
+            remaining_live
+                .into_iter()
+                .filter(|row| !row.pid.is_some_and(|pid| merged_live_pids.contains(&pid))),
+        );
+
         if let Some(capture) = capture {
             apply_live_capture(&mut rows, sample, capture, &children);
         }
@@ -393,6 +460,12 @@ impl LiveView {
             notes,
         }
     }
+}
+
+fn proc_cwd(pid: u32) -> Option<String> {
+    fs::read_link(format!("/proc/{pid}/cwd"))
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
 }
 
 fn session_age_s(session: &SessionRow) -> Option<f64> {
@@ -983,6 +1056,8 @@ fn live_process_rows(
             command: root
                 .map(|proc_info| proc_info.command.clone())
                 .unwrap_or_else(|| "unknown".to_string()),
+            workspace: proc_cwd(root_pid),
+            last_message_at: None,
         });
     }
 
@@ -1174,6 +1249,8 @@ mod tests {
             unattributed: 0,
             trace: "proc".to_string(),
             command: "claude".to_string(),
+            workspace: None,
+            last_message_at: None,
         };
         let sample = test_live_sample(1, 10);
         let mut bindings = LiveSessionBindings::default();
@@ -1261,6 +1338,8 @@ mod tests {
                 unattributed: 0,
                 trace: "agent-native+proc+ebpf_file".to_string(),
                 command: "codex".to_string(),
+                workspace: None,
+                last_message_at: None,
             }],
             sections: Vec::new(),
             failures: Vec::new(),

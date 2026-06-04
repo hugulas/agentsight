@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-use crate::output::{AgentTopOutput, AgentTopRow, TopOptions};
+use crate::output::{AgentTopOutput, AgentTopRow, TopOptions, TopSection};
 use crate::text::truncate_text;
 use ratatui::{
     Frame,
@@ -117,11 +117,10 @@ fn render_session_table(
     selected: usize,
 ) {
     let header = Row::new(vec![
-        Cell::from("SESSION"),
         Cell::from("AGENT"),
         Cell::from("STATE"),
         Cell::from("AGE"),
-        Cell::from("MODEL"),
+        Cell::from("LAST MSG"),
         Cell::from("TOKENS"),
         Cell::from("HEALTH"),
         Cell::from("ACTIVITY"),
@@ -135,24 +134,22 @@ fn render_session_table(
 
     let rows = top.rows.iter().map(|row| {
         Row::new(vec![
-            Cell::from(truncate_text(&row.session, 16)),
-            Cell::from(truncate_text(&row.agent, 8)),
+            Cell::from(truncate_text(&row.agent, 10)),
             Cell::from(row.state_label()),
             Cell::from(row.age_label()),
-            Cell::from(truncate_text(&row.model_label(), 14)),
+            Cell::from(row.last_msg_relative_label()),
             Cell::from(row.token_label()),
             Cell::from(row.health_label()),
-            Cell::from(truncate_text(&tui_activity_label(row), 48)),
+            Cell::from(truncate_text(&row.activity_label(), 48)),
         ])
         .style(row_style(row))
     });
 
     let widths = [
-        Constraint::Length(16),
-        Constraint::Length(8),
+        Constraint::Length(10),
         Constraint::Length(7),
         Constraint::Length(6),
-        Constraint::Length(14),
+        Constraint::Length(8),
         Constraint::Length(9),
         Constraint::Length(12),
         Constraint::Min(12),
@@ -184,7 +181,7 @@ fn render_session_detail(
 ) {
     let title = format!("selected session - {}", normalize_view_key(&options.view));
     let lines = if let Some(row) = top.rows.get(selected) {
-        session_detail_lines(row, options)
+        session_detail_lines(row, top, options)
     } else {
         vec![
             Line::from("No active agent session matched this view."),
@@ -349,86 +346,183 @@ fn render_top_diagnostics(frame: &mut Frame<'_>, top: &AgentTopOutput<'_>) {
     );
 }
 
-fn session_detail_lines(row: &AgentTopRow, options: &TopOptions) -> Vec<Line<'static>> {
-    match normalize_view_key(&options.view).as_str() {
-        "processes" => vec![
-            detail_line("session", row.session.clone()),
-            detail_line("agent", format!("{} ({})", row.agent, row.state_label())),
-            detail_line(
-                "root pid",
-                row.pid
-                    .map(|pid| pid.to_string())
-                    .unwrap_or_else(|| "-".to_string()),
-            ),
-            detail_line("age", row.age_label()),
-            detail_line("processes", row.processes.to_string()),
-            detail_line("cpu", format!("{:.1}%", row.cpu_percent)),
-            detail_line("rss", format!("{} MB", row.rss_mb)),
-            detail_line("command", row.command.clone()),
-        ],
-        "files" => vec![
-            detail_line("session", row.session.clone()),
-            detail_line("evidence", row.evidence_label()),
-            detail_line("execs", row.execs.to_string()),
-            detail_line("failures", row.failures.to_string()),
-            detail_line("file events", row.files.to_string()),
-            detail_line("unattributed ebpf pids", row.unattributed.to_string()),
-            detail_line("trace", row.trace.clone()),
-            detail_line("command", row.command.clone()),
-        ],
-        "network" => vec![
-            detail_line("session", row.session.clone()),
-            detail_line("evidence", row.evidence_label()),
-            detail_line("network events", row.network.to_string()),
-            detail_line("tokens", format_token_value(row.tokens)),
-            detail_line("tools", row.tools.to_string()),
-            detail_line("trace", row.trace.clone()),
-            detail_line("command", row.command.clone()),
-        ],
-        "models" => vec![
-            detail_line("session", row.session.clone()),
-            detail_line("agent", row.agent.clone()),
-            detail_line("model", row.model_label()),
-            detail_line("tokens", row.token_label()),
-            detail_line("tools", row.tools.to_string()),
-            detail_line("prompt or command", row.command.clone()),
-        ],
-        _ => vec![
-            detail_line("session", row.session.clone()),
-            detail_line(
-                "agent",
+fn session_detail_lines(
+    row: &AgentTopRow,
+    top: &AgentTopOutput<'_>,
+    options: &TopOptions,
+) -> Vec<Line<'static>> {
+    let view = normalize_view_key(&options.view);
+    match view.as_str() {
+        "processes" => {
+            let mut lines = vec![
+                detail_line(
+                    "session",
+                    format!(
+                        "{}  model={}  workspace={}",
+                        row.session,
+                        row.model_label(),
+                        row.workspace.as_deref().unwrap_or("-")
+                    ),
+                ),
+                detail_line(
+                    "pid",
+                    format!(
+                        "{}  cpu={:.1}%  rss={} MB  processes={}",
+                        row.pid
+                            .map(|p| p.to_string())
+                            .unwrap_or_else(|| "-".to_string()),
+                        row.cpu_percent,
+                        row.rss_mb,
+                        row.processes
+                    ),
+                ),
+            ];
+            if let Some(items) = find_section(&top.sections, "Processes") {
+                lines.push(detail_line(
+                    "recent execs",
+                    format_top_items(items, 6),
+                ));
+            }
+            lines
+        }
+        "files" => {
+            let mut lines = vec![detail_line(
+                "session",
                 format!(
-                    "{}  state={}  pid={}",
-                    row.agent,
-                    row.state_label(),
+                    "{}  files={}  workspace={}",
+                    row.session,
+                    row.files,
+                    row.workspace.as_deref().unwrap_or("-")
+                ),
+            )];
+            if let Some(items) = find_section(&top.sections, "Files") {
+                let dirs = aggregate_to_dirs(items);
+                lines.push(detail_line("top dirs", format_top_items(&dirs, 5)));
+                let recent: Vec<_> = items.iter().take(4).collect();
+                let formatted = recent
+                    .iter()
+                    .map(|(name, count)| {
+                        let basename = name.rsplit('/').next().unwrap_or(name);
+                        format!("{basename}({count})")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("  ");
+                lines.push(detail_line("recent files", formatted));
+            }
+            lines
+        }
+        "network" => {
+            let mut lines = vec![detail_line(
+                "session",
+                format!(
+                    "{}  network={}  tokens={}",
+                    row.session,
+                    row.network,
+                    format_token_value(row.tokens)
+                ),
+            )];
+            if let Some(items) = find_section(&top.sections, "Network") {
+                lines.push(detail_line("top hosts", format_top_items(items, 6)));
+            }
+            lines
+        }
+        "models" => {
+            let mut lines = vec![detail_line(
+                "session",
+                format!(
+                    "{}  tokens={}  tools={}  workspace={}",
+                    row.session,
+                    row.token_label(),
+                    row.tools,
+                    row.workspace.as_deref().unwrap_or("-")
+                ),
+            )];
+            if let Some(items) = find_section(&top.sections, "Models") {
+                lines.push(detail_line("models", format_top_items(items, 5)));
+            }
+            lines
+        }
+        _ => vec![
+            detail_line(
+                "session",
+                format!(
+                    "{}  pid={}  trace={}",
+                    row.session,
                     row.pid
-                        .map(|pid| pid.to_string())
-                        .unwrap_or_else(|| "-".to_string())
+                        .map(|p| p.to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                    row.trace,
                 ),
             ),
-            detail_line("model", row.model_label()),
-            detail_line("age", row.age_label()),
-            detail_line("evidence", row.evidence_label()),
-            detail_line("session tokens", row.token_label()),
+            detail_line(
+                "model",
+                format!(
+                    "{}  tokens={}  tools={}",
+                    row.model_label(),
+                    row.token_label(),
+                    row.tools,
+                ),
+            ),
+            detail_line(
+                "workspace",
+                row.workspace.as_deref().unwrap_or("-").to_string(),
+            ),
+            detail_line(
+                "last message",
+                row.last_msg_label(),
+            ),
             detail_line(
                 "resources",
                 format!(
-                    "cpu={:.1}% rss={} MB processes={}",
+                    "cpu={:.1}%  rss={} MB  processes={}",
                     row.cpu_percent, row.rss_mb, row.processes
                 ),
             ),
-            detail_line(
-                "activity",
-                format!(
-                    "processes={} tools={} execs={} failures={} files={} network={}",
-                    row.processes, row.tools, row.execs, row.failures, row.files, row.network
-                ),
-            ),
-            detail_line("unattributed ebpf pids", row.unattributed.to_string()),
-            detail_line("trace", row.trace.clone()),
-            detail_line("prompt or command", row.command.clone()),
+            detail_line("command", row.command.clone()),
         ],
     }
+}
+
+fn find_section<'a>(
+    sections: &'a [TopSection],
+    title: &str,
+) -> Option<&'a Vec<(String, i64)>> {
+    sections
+        .iter()
+        .find(|(t, _, _)| *t == title)
+        .map(|(_, _, items)| items)
+        .filter(|items| !items.is_empty())
+}
+
+fn format_top_items(items: &[(String, i64)], limit: usize) -> String {
+    let parts: Vec<_> = items
+        .iter()
+        .take(limit)
+        .map(|(name, count)| {
+            let short = crate::text::truncate_with_ellipsis(name, 28);
+            format!("{short}({count})")
+        })
+        .collect();
+    if parts.is_empty() {
+        "-".to_string()
+    } else {
+        parts.join("  ")
+    }
+}
+
+fn aggregate_to_dirs(items: &[(String, i64)]) -> Vec<(String, i64)> {
+    let mut dir_counts = std::collections::BTreeMap::new();
+    for (path, count) in items {
+        let dir = match path.rfind('/') {
+            Some(pos) if pos > 0 => &path[..pos],
+            _ => path.as_str(),
+        };
+        *dir_counts.entry(dir.to_string()).or_insert(0i64) += count;
+    }
+    let mut sorted: Vec<_> = dir_counts.into_iter().collect();
+    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted.truncate(5);
+    sorted
 }
 
 fn detail_line(label: &'static str, value: String) -> Line<'static> {
@@ -461,33 +555,6 @@ fn label_style() -> Style {
     Style::default()
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD)
-}
-
-fn tui_activity_label(row: &AgentTopRow) -> String {
-    let mut parts = Vec::new();
-    if row.processes > 0 {
-        parts.push(format!("{} proc", super::format::format_count(row.processes as i64)));
-    }
-    if row.tools > 0 {
-        parts.push(format!("{} tool", super::format::format_count(row.tools as i64)));
-    }
-    if row.execs > 0 {
-        parts.push(format!("{} exec", super::format::format_count(row.execs as i64)));
-    }
-    if row.failures > 0 {
-        parts.push(format!("{} fail", super::format::format_count(row.failures as i64)));
-    }
-    if row.files > 0 {
-        parts.push(format!("{} file", super::format::format_count(row.files as i64)));
-    }
-    if row.network > 0 {
-        parts.push(format!("{} net", super::format::format_count(row.network as i64)));
-    }
-    if parts.is_empty() {
-        "-".to_string()
-    } else {
-        parts.join(", ")
-    }
 }
 
 fn row_style(row: &AgentTopRow) -> Style {
