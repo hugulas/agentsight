@@ -6,8 +6,8 @@
 mod sse_processor_tests {
     use super::super::Analyzer;
     use super::super::sse_processor::SSEProcessor;
-    use crate::framework::core::Event;
-    use crate::framework::runners::EventStream;
+    use crate::event::Event;
+    use crate::runners::EventStream;
     use crate::view::MaterializedView;
     use futures::stream;
     use futures::stream::StreamExt;

@@ -2,10 +2,10 @@
 // Copyright (c) 2026 eunomia-bpf org.
 
 use super::sort_agent_rows;
-use crate::framework::analyzers::TimestampNormalizer;
-use crate::framework::binary_extractor::BinaryExtractor;
-use crate::framework::core::Event;
-use crate::framework::runners::{ProcessRunner, Runner};
+use crate::analyzers::TimestampNormalizer;
+use crate::binary_extractor::BinaryExtractor;
+use crate::event::Event;
+use crate::runners::{ProcessRunner, Runner};
 use crate::output::{
     AgentTopOutput, AgentTopRow, TopOptions, clear_screen, draw_live_top_tui, next_view_key,
     print_agent_top, print_top_sudo_prompt,
@@ -648,7 +648,7 @@ fn prepare_live_ebpf_privileges() -> Result<Option<String>, String> {
 }
 
 async fn consume_live_ebpf_stream(
-    mut stream: crate::framework::runners::EventStream,
+    mut stream: crate::runners::EventStream,
     state: Arc<Mutex<LiveCaptureState>>,
 ) {
     while let Some(event) = stream.next().await {

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-use crate::framework::analyzers::{Analyzer, AnalyzerError};
-use crate::framework::runners::EventStream;
+use crate::analyzers::{Analyzer, AnalyzerError};
+use crate::runners::EventStream;
 use crate::view::SharedMaterializedView;
 use crate::view::types::ViewSink;
 use async_trait::async_trait;

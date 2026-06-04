@@ -2,7 +2,7 @@
 // Copyright (c) 2026 eunomia-bpf org.
 
 use super::{EventStream, Runner, RunnerError};
-use crate::framework::analyzers::Analyzer;
+use crate::analyzers::Analyzer;
 use async_trait::async_trait;
 use futures::stream::select_all;
 
@@ -83,8 +83,8 @@ impl Runner for AgentRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::framework::analyzers::{HTTPParser, MaterializingAnalyzer, SSEProcessor};
-    use crate::framework::runners::FakeRunner;
+    use crate::analyzers::{HTTPParser, MaterializingAnalyzer, SSEProcessor};
+    use crate::runners::FakeRunner;
     use crate::view::MaterializedView;
     use futures::stream::StreamExt;
     use std::time::Duration;

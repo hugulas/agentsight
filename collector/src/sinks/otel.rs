@@ -17,8 +17,8 @@
 //! token extraction happen before this sink sees the row; this sink only maps
 //! stable view data to OTLP.
 //!
-use crate::framework::analyzers::AnalyzerError;
-use crate::framework::semantic::llm::provider_from_host;
+use crate::analyzers::AnalyzerError;
+use crate::semantic::llm::provider_from_host;
 use crate::view::types::{LlmCallRow, ViewResult, ViewSink};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;

@@ -2,7 +2,7 @@
 // Copyright (c) 2026 eunomia-bpf org.
 
 use super::{Analyzer, AnalyzerError};
-use crate::framework::runners::EventStream;
+use crate::runners::EventStream;
 use async_trait::async_trait;
 use futures::stream::StreamExt;
 use serde_json::Value;
@@ -116,7 +116,7 @@ impl Analyzer for AuthHeaderRemover {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::framework::core::Event;
+    use crate::event::Event;
     use futures::stream;
     use serde_json::json;
 

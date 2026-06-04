@@ -3,8 +3,8 @@
 
 use super::event::HTTPEvent;
 use super::{Analyzer, AnalyzerError};
-use crate::framework::core::Event;
-use crate::framework::runners::EventStream;
+use crate::event::Event;
+use crate::runners::EventStream;
 use async_trait::async_trait;
 use futures::{stream, stream::StreamExt};
 use hpack::Decoder as HpackDecoder;

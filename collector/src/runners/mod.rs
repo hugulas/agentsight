@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-use crate::framework::core::Event;
+use crate::event::Event;
 use async_trait::async_trait;
 use futures::stream::Stream;
 use std::pin::Pin;
@@ -19,7 +19,7 @@ pub trait Runner: Send + Sync {
     async fn run(&mut self) -> Result<EventStream, RunnerError>;
 
     /// Add an analyzer to this runner's processing chain
-    fn add_analyzer(self, analyzer: Box<dyn crate::framework::analyzers::Analyzer>) -> Self
+    fn add_analyzer(self, analyzer: Box<dyn crate::analyzers::Analyzer>) -> Self
     where
         Self: Sized;
 }

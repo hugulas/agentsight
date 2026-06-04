@@ -2,8 +2,8 @@
 // Copyright (c) 2026 eunomia-bpf org.
 
 use super::{EventStream, RunnerError};
-use crate::framework::analyzers::Analyzer;
-use crate::framework::core::Event;
+use crate::analyzers::Analyzer;
+use crate::event::Event;
 use futures::stream::Stream;
 use log::debug;
 use std::pin::Pin;

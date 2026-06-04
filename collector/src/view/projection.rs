@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-use crate::framework::core::Event;
-use crate::framework::semantic::llm::TokenUsage;
-use crate::framework::semantic::{
+use crate::event::Event;
+use crate::semantic::llm::TokenUsage;
+use crate::semantic::{
     CanonicalEvent, EventKind, body_json, extract_model, extract_token_usage,
     extract_token_usage_from_sse, normalize_event, provider_from_host,
 };

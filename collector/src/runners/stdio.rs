@@ -3,7 +3,7 @@
 
 use super::common::{AnalyzerProcessor, BinaryExecutor, parse_json_event};
 use super::{EventStream, Runner, RunnerError};
-use crate::framework::analyzers::Analyzer;
+use crate::analyzers::Analyzer;
 use async_trait::async_trait;
 use futures::stream::StreamExt;
 use std::path::Path;

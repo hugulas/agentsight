@@ -3,8 +3,8 @@
 
 use super::common::AnalyzerProcessor;
 use super::{EventStream, Runner, RunnerError};
-use crate::framework::analyzers::Analyzer;
-use crate::framework::core::Event;
+use crate::analyzers::Analyzer;
+use crate::event::Event;
 use async_trait::async_trait;
 use serde_json::json;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -188,7 +188,7 @@ impl Runner for FakeRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::framework::analyzers::{Analyzer, HTTPParser, MaterializingAnalyzer, SSEProcessor};
+    use crate::analyzers::{Analyzer, HTTPParser, MaterializingAnalyzer, SSEProcessor};
     use crate::view::MaterializedView;
     use futures::stream::StreamExt;
 
@@ -376,7 +376,7 @@ mod tests {
         };
 
         let processed_stream =
-            crate::framework::runners::common::AnalyzerProcessor::process_through_analyzers(
+            crate::runners::common::AnalyzerProcessor::process_through_analyzers(
                 Box::pin(event_stream),
                 &mut runner.analyzers,
             )
@@ -423,7 +423,7 @@ mod tests {
             async fn process(
                 &mut self,
                 stream: EventStream,
-            ) -> Result<EventStream, crate::framework::analyzers::AnalyzerError> {
+            ) -> Result<EventStream, crate::analyzers::AnalyzerError> {
                 let event_count = self.event_count.clone();
                 let max_events = self.max_events_seen.clone();
 

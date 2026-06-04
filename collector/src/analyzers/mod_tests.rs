@@ -1,5 +1,5 @@
 use super::*;
-use crate::framework::runners::{EventStream, FakeRunner, Runner};
+use crate::runners::{EventStream, FakeRunner, Runner};
 use crate::view::MaterializedView;
 use futures::stream::StreamExt;
 use serde_json::json;

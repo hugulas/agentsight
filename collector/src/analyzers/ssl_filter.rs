@@ -4,7 +4,7 @@
 use super::common;
 use super::filter_base::{FilterBase, FilterExpr, MetricsStrategy};
 use super::{Analyzer, AnalyzerError};
-use crate::framework::runners::EventStream;
+use crate::runners::EventStream;
 use async_trait::async_trait;
 use serde_json::Value;
 

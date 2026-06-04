@@ -288,7 +288,7 @@ pub(crate) fn run_agent_native_audit(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::framework::core::Event;
+    use crate::event::Event;
     use serde_json::json;
 
     fn sqlite_summary(db: &std::path::Path) -> SessionSummary {

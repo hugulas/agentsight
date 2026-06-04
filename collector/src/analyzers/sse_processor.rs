@@ -2,8 +2,8 @@
 // Copyright (c) 2026 eunomia-bpf org.
 
 use super::{Analyzer, AnalyzerError};
-use crate::framework::core::Event;
-use crate::framework::runners::EventStream;
+use crate::event::Event;
+use crate::runners::EventStream;
 use async_trait::async_trait;
 use futures::stream::StreamExt;
 use serde_json::{Value, json};

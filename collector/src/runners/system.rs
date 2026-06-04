@@ -2,8 +2,8 @@
 // Copyright (c) 2026 eunomia-bpf org.
 
 use super::{EventStream, Runner, RunnerError};
-use crate::framework::analyzers::Analyzer;
-use crate::framework::core::Event;
+use crate::analyzers::Analyzer;
+use crate::event::Event;
 use crate::sources::proc::ProcSnapshot;
 use async_trait::async_trait;
 use futures::stream::Stream;

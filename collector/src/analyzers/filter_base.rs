@@ -3,7 +3,7 @@
 
 use super::filter_metrics::MetricsSlot;
 use super::{Analyzer, AnalyzerError};
-use crate::framework::runners::EventStream;
+use crate::runners::EventStream;
 use async_trait::async_trait;
 use futures::stream::StreamExt;
 use serde_json::Value;

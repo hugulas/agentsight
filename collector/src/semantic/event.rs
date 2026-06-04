@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-use crate::framework::core::Event;
-use crate::framework::semantic::llm::{
+use crate::event::Event;
+use crate::semantic::llm::{
     body_json, extract_model, extract_model_from_path, extract_token_usage, is_llm_path,
     provider_from_host,
 };

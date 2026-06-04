@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-use crate::framework::core::Event;
+use crate::event::Event;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;

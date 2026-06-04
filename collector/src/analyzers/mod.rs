@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-use crate::framework::runners::EventStream;
+use crate::runners::EventStream;
 use async_trait::async_trait;
 
 /// Type alias for errors that can be sent between threads

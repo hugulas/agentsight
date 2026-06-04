@@ -7,8 +7,8 @@
 //! This ensures timestamps are standardized for frontend consumption.
 
 use super::Analyzer;
-use crate::framework::core::Event;
-use crate::framework::core::timestamp::boot_ns_to_epoch_ms;
+use crate::event::Event;
+use crate::time::boot_ns_to_epoch_ms;
 use async_trait::async_trait;
 use futures::stream::{Stream, StreamExt};
 use std::pin::Pin;
