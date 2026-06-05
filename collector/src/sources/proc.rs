@@ -19,7 +19,7 @@ impl PidSeed {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct ProcInfo {
     pub(crate) pid: u32,
     pub(crate) ppid: u32,
@@ -35,13 +35,13 @@ pub(crate) struct ProcInfo {
     pub(crate) threads: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct ProcessKey {
     pub(crate) pid: u32,
     pub(crate) starttime_ticks: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct ProcessTree {
     pub(crate) root: ProcessKey,
     pub(crate) members: Vec<ProcessKey>,
@@ -68,6 +68,16 @@ pub(crate) struct ProcSnapshot {
     pub(crate) at: Instant,
     pub(crate) uptime_s: f64,
     pub(crate) procs: BTreeMap<u32, ProcInfo>,
+}
+
+impl Default for ProcSnapshot {
+    fn default() -> Self {
+        Self {
+            at: Instant::now(),
+            uptime_s: 0.0,
+            procs: BTreeMap::new(),
+        }
+    }
 }
 
 impl ProcSnapshot {

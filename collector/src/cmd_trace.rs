@@ -9,7 +9,7 @@ use crate::analyzers::{
 };
 use crate::binary_extractor::BinaryExtractor;
 use crate::binary_resolver::{
-    binary_embeds_ssl, parse_container_ref, resolve_binary_path, resolve_container_binary_arg,
+    binary_embeds_ssl, resolve_binary_path, resolve_container_binary_arg,
 };
 use crate::output::{
     print_event_json, print_trace_container_binary_resolved, print_trace_header,
@@ -130,101 +130,48 @@ pub(crate) fn build_trace_agent_with_view(
     cfg: &TraceConfig,
     view: SharedMaterializedView,
 ) -> Result<AgentRunner, RunnerError> {
-    // Bind config fields to the local names the body below uses.
-    let ssl_enabled = cfg.ssl;
-    let pid = cfg.pid;
-    let session_id = cfg.session_id;
-    let ssl_uid = cfg.ssl_uid;
-    let comm = cfg.comm.as_deref();
-    let ssl_filter = cfg.ssl_filter.as_slice();
-    let ssl_handshake = cfg.ssl_handshake;
-    let ssl_http = cfg.ssl_http;
-    let ssl_raw_data = cfg.ssl_raw_data;
-    let process_enabled = cfg.process;
-    let process_seed_pids = cfg.process_seed_pids.as_slice();
-    let stdio_enabled = cfg.stdio;
-    let stdio_uid = cfg.stdio_uid;
-    let stdio_comm = cfg.stdio_comm.as_deref();
-    let stdio_all_fds = cfg.stdio_all_fds;
-    let stdio_max_bytes = cfg.stdio_max_bytes;
-    let duration = cfg.duration;
-    let mode = cfg.mode;
-    let system_enabled = cfg.system;
-    let system_interval = cfg.system_interval;
-    let http_filter = cfg.http_filter.as_slice();
-    let disable_auth_removal = cfg.disable_auth_removal;
-    let otel = &cfg.otel;
-    let binary_path = cfg.binary_path.as_deref();
-    let db_path = cfg.db_path.as_deref();
-
     let mut agent = AgentRunner::new();
 
-    // Add SSL runner if enabled
-    if ssl_enabled {
+    if cfg.ssl {
         let mut ssl_runner = BinaryRunner::ssl(binary_extractor.get_sslsniff_path());
 
-        // Configure SSL runner arguments (sslsniff supports -p, -u, -c, -h, -v, --binary-path)
-        let mut ssl_args = Vec::new();
-        if session_id.is_none()
-            && let Some(pid_filter) = pid
-        {
-            ssl_args.extend(["-p".to_string(), pid_filter.to_string()]);
-        }
-        if let Some(session_filter) = session_id {
-            ssl_args.extend(["--session".to_string(), session_filter.to_string()]);
-        }
-        if let Some(uid_filter) = ssl_uid {
-            ssl_args.extend(["-u".to_string(), uid_filter.to_string()]);
-        }
-        // Note: when --binary-path is specified, we skip the --comm filter for sslsniff
-        // because SSL traffic comes from "HTTP Client" thread (not the process name).
-        // bpf_get_current_comm() returns thread name, so -c <process-name> would filter
-        // out all SSL traffic. Instead, --binary-path alone provides sufficient targeting.
-        if binary_path.is_none()
-            && let Some(comm_filter) = comm
-        {
-            ssl_args.extend(["-c".to_string(), comm_filter.to_string()]);
-        }
-        if ssl_handshake {
-            ssl_args.push("--handshake".to_string());
-        }
-        if let Some(path) = binary_path {
-            ssl_args.extend(["--binary-path".to_string(), path.to_string()]);
-        }
+        let ssl_args = build_ssl_args(cfg);
         if !ssl_args.is_empty() {
             ssl_runner = ssl_runner.with_args(&ssl_args);
         }
 
-        // Add TimestampNormalizer first
         ssl_runner = ssl_runner.add_analyzer(Box::new(TimestampNormalizer::new()));
 
-        // Add SSL-specific analyzers
-        if !ssl_filter.is_empty() {
-            ssl_runner =
-                ssl_runner.add_analyzer(Box::new(SSLFilter::with_patterns(ssl_filter.to_vec())));
+        if !cfg.ssl_filter.is_empty() {
+            ssl_runner = ssl_runner
+                .add_analyzer(Box::new(SSLFilter::with_patterns(cfg.ssl_filter.clone())));
         }
 
-        if ssl_http {
-            ssl_runner =
-                add_http_analyzers(ssl_runner, ssl_raw_data, http_filter, disable_auth_removal);
+        if cfg.ssl_http {
+            ssl_runner = add_http_analyzers(
+                ssl_runner,
+                cfg.ssl_raw_data,
+                &cfg.http_filter,
+                cfg.disable_auth_removal,
+            );
         }
 
         agent = agent.add_runner(Box::new(ssl_runner));
     }
 
-    // Add stdio runner if enabled
-    if stdio_enabled {
-        let pid_filter =
-            pid.ok_or_else(|| RunnerError::from("stdio capture currently requires --pid"))?;
+    if cfg.stdio {
+        let pid_filter = cfg
+            .pid
+            .ok_or_else(|| RunnerError::from("stdio capture currently requires --pid"))?;
         let mut stdio_runner = BinaryRunner::stdio(binary_extractor.get_stdiocap_path()?);
         let mut stdio_args = build_stdio_args(
             pid_filter,
-            stdio_uid,
-            stdio_comm,
-            stdio_all_fds,
-            stdio_max_bytes,
+            cfg.stdio_uid,
+            cfg.stdio_comm.as_deref(),
+            cfg.stdio_all_fds,
+            cfg.stdio_max_bytes,
         );
-        if let Some(session_filter) = session_id {
+        if let Some(session_filter) = cfg.session_id {
             stdio_args.extend(["--session".to_string(), session_filter.to_string()]);
         }
 
@@ -234,80 +181,52 @@ pub(crate) fn build_trace_agent_with_view(
         agent = agent.add_runner(Box::new(stdio_runner));
     }
 
-    // Add process runner if enabled
-    if process_enabled {
+    if cfg.process {
         let mut process_runner =
             ProcessRunner::from_binary_extractor(binary_extractor.get_process_path());
 
-        // Configure process runner arguments.
-        let mut process_args = Vec::new();
-        if let Some(pid_filter) = pid {
-            process_args.extend(["-p".to_string(), pid_filter.to_string()]);
-        }
-        if let Some(session_filter) = session_id {
-            process_args.extend(["--session".to_string(), session_filter.to_string()]);
-        }
-        if let Some(comm_filter) = comm {
-            process_args.extend(["-c".to_string(), comm_filter.to_string()]);
-        }
-        if let Some(duration_filter) = duration {
-            process_args.extend(["-d".to_string(), duration_filter.to_string()]);
-        }
-        if let Some(mode_filter) = mode {
-            process_args.extend(["-m".to_string(), mode_filter.to_string()]);
-        }
+        let process_args = build_process_args(cfg);
         if !process_args.is_empty() {
             process_runner = process_runner.with_args(&process_args);
         }
-        process_runner = process_runner.with_seed_pids(process_seed_pids);
-
-        // Add TimestampNormalizer first
+        process_runner = process_runner.with_seed_pids(&cfg.process_seed_pids);
         process_runner = process_runner.add_analyzer(Box::new(TimestampNormalizer::new()));
 
         agent = agent.add_runner(Box::new(process_runner));
     }
 
-    // Add system resource runner if enabled
-    if system_enabled {
-        let mut system_runner = SystemRunner::new().interval(system_interval);
+    if cfg.system {
+        let mut system_runner = SystemRunner::new().interval(cfg.system_interval);
 
-        // Use same comm filter as other runners if provided
-        if let Some(comm_filter) = comm {
+        if let Some(comm_filter) = cfg.comm.as_deref() {
             system_runner = system_runner.comm(comm_filter);
         }
-
-        // Use same pid filter if provided
-        if let Some(pid_filter) = pid {
+        if let Some(pid_filter) = cfg.pid {
             system_runner = system_runner.pid(pid_filter);
         }
-        if let Some(session_filter) = session_id {
+        if let Some(session_filter) = cfg.session_id {
             system_runner = system_runner.session(session_filter);
         }
-
-        // Add TimestampNormalizer first
         system_runner = system_runner.add_analyzer(Box::new(TimestampNormalizer::new()));
 
         agent = agent.add_runner(Box::new(system_runner));
     }
 
-    // Ensure at least one runner is enabled
-    if !ssl_enabled && !process_enabled && !stdio_enabled && !system_enabled {
+    if !cfg.ssl && !cfg.process && !cfg.stdio && !cfg.system {
         return Err(
             "At least one monitoring type must be enabled (--ssl, --process, --stdio, or --system)"
                 .into(),
         );
     }
 
-    // Add global materialized view. Optional exporters consume projected rows,
-    // not raw runner events.
     let mut materializer = MaterializingAnalyzer::with_view(view);
-    if let Some(path) = db_path {
+    if let Some(path) = cfg.db_path.as_deref() {
         materializer =
             materializer.add_view_sink(Box::new(SqliteStore::open(path).map_err(|e| {
                 RunnerError::from(format!("failed to open SQLite database '{}': {}", path, e))
             })?));
     }
-    if let Some(otel_config) = otel {
+    if let Some(otel_config) = &cfg.otel {
         materializer = materializer.add_view_sink(Box::new(OtelExporter::new(
             otel_config.endpoint.clone(),
             otel_config.capture_content,
@@ -316,6 +235,55 @@ pub(crate) fn build_trace_agent_with_view(
     agent = agent.add_global_analyzer(Box::new(materializer));
 
     Ok(agent)
+}
+
+fn build_ssl_args(cfg: &TraceConfig) -> Vec<String> {
+    let mut args = Vec::new();
+    if cfg.session_id.is_none() {
+        if let Some(pid) = cfg.pid {
+            args.extend(["-p".to_string(), pid.to_string()]);
+        }
+    }
+    if let Some(session) = cfg.session_id {
+        args.extend(["--session".to_string(), session.to_string()]);
+    }
+    if let Some(uid) = cfg.ssl_uid {
+        args.extend(["-u".to_string(), uid.to_string()]);
+    }
+    // Skip --comm for sslsniff when --binary-path is set: SSL traffic runs on
+    // "HTTP Client" thread, not the process name, so comm filter drops everything.
+    if cfg.binary_path.is_none() {
+        if let Some(comm) = cfg.comm.as_deref() {
+            args.extend(["-c".to_string(), comm.to_string()]);
+        }
+    }
+    if cfg.ssl_handshake {
+        args.push("--handshake".to_string());
+    }
+    if let Some(path) = cfg.binary_path.as_deref() {
+        args.extend(["--binary-path".to_string(), path.to_string()]);
+    }
+    args
+}
+
+fn build_process_args(cfg: &TraceConfig) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(pid) = cfg.pid {
+        args.extend(["-p".to_string(), pid.to_string()]);
+    }
+    if let Some(session) = cfg.session_id {
+        args.extend(["--session".to_string(), session.to_string()]);
+    }
+    if let Some(comm) = cfg.comm.as_deref() {
+        args.extend(["-c".to_string(), comm.to_string()]);
+    }
+    if let Some(duration) = cfg.duration {
+        args.extend(["-d".to_string(), duration.to_string()]);
+    }
+    if let Some(mode) = cfg.mode {
+        args.extend(["-m".to_string(), mode.to_string()]);
+    }
+    args
 }
 
 /// Trace monitoring with configurable runners and analyzers
@@ -329,10 +297,9 @@ pub(crate) async fn run_trace(
     // is translated in Rust to an explicit host-side SSL attach target. The C
     // sslsniff binary only consumes that path; it does not scan container
     // process maps itself.
-    if let Some(reference) = cfg.binary_path.as_deref().and_then(parse_container_ref) {
-        let resolved = resolve_container_binary_arg(cfg.binary_path.as_deref())
-            .map_err(RunnerError::from)?
-            .expect("container reference resolves to a binary path");
+    if let Some((reference, resolved)) =
+        resolve_container_binary_arg(cfg.binary_path.as_deref()).map_err(RunnerError::from)?
+    {
         print_trace_container_binary_resolved(&reference, &resolved);
         cfg.binary_path = Some(resolved);
     }

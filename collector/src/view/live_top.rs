@@ -7,12 +7,12 @@ use crate::sources::agent_native as agent_native_sessions;
 use crate::sources::proc::{self as procfs, ProcSnapshot as LiveSample};
 use crate::view::process_select;
 use crate::view::session_process_match::{
-    LiveProcessCandidate, SessionProcessMatch, SessionProcessMatcher,
+    LiveProcessCandidate, SessionProcessMatch, SessionProcessMatcher, session_path_from_raw_path,
 };
 use crate::view::top::{recent_failures, sort_agent_rows, top_sections};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
@@ -427,7 +427,7 @@ fn ebpf_paths_by_process(
         let Some(target) = row.target.as_ref().filter(|target| !target.is_empty()) else {
             continue;
         };
-        let Some(session_path) = agent_native_sessions::session_log_path_from_str(target) else {
+        let Some(session_path) = session_path_from_raw_path(Path::new(target)) else {
             continue;
         };
         let entry = latest
@@ -540,35 +540,6 @@ mod tests {
     use crate::model::SnapshotOptions;
     use crate::sources::proc::ProcInfo;
     use serde_json::json;
-    use std::time::Instant;
-
-    fn test_live_sample(pid: u32, starttime_ticks: u64) -> LiveSample {
-        test_live_sample_with_cwd(pid, starttime_ticks, None)
-    }
-
-    fn test_live_sample_with_cwd(pid: u32, starttime_ticks: u64, cwd: Option<&str>) -> LiveSample {
-        LiveSample {
-            at: Instant::now(),
-            uptime_s: 100.0,
-            procs: BTreeMap::from([(
-                pid,
-                ProcInfo {
-                    pid,
-                    ppid: 0,
-                    session_id: pid,
-                    comm: "claude".to_string(),
-                    command: "claude".to_string(),
-                    cwd: cwd.map(PathBuf::from),
-                    ticks: 0,
-                    starttime_ticks,
-                    rss_kb: 0,
-                    rss_mb: 0,
-                    vsz_kb: 0,
-                    threads: 1,
-                },
-            )]),
-        }
-    }
 
     #[test]
     fn pid_filter_does_not_show_unbound_agent_native_sessions() {
@@ -591,7 +562,19 @@ mod tests {
         };
 
         let mut live_view = LiveView::default();
-        let top = live_view.build_top(&test_live_sample(1, 10), None, &session_snapshot, &options);
+        let sample = LiveSample {
+            procs: BTreeMap::from([(
+                1,
+                ProcInfo {
+                    pid: 1,
+                    comm: "claude".to_string(),
+                    starttime_ticks: 10,
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        };
+        let top = live_view.build_top(&sample, None, &session_snapshot, &options);
 
         assert_eq!(top.rows.len(), 1);
         assert_eq!(top.rows[0].pid, Some(1));
@@ -606,18 +589,12 @@ mod tests {
             agent_type: "claude".to_string(),
             start_timestamp_ms: now_ms().saturating_sub(10_000),
             end_timestamp_ms: Some(now_ms().saturating_sub(5_000)),
-            status: "observed".to_string(),
-            model: Some("claude-opus".to_string()),
-            input_tokens: 1,
-            output_tokens: 2,
-            total_tokens: 3,
-            view_source: "test".to_string(),
-            confidence: Some(0.95),
             attributes: json!({
                 "path": path.to_string_lossy(),
                 "display_id": "claude:cwd",
                 "cwd": "/work",
             }),
+            ..Default::default()
         };
         let session_snapshot = Snapshot {
             sessions: vec![session],
@@ -631,12 +608,20 @@ mod tests {
         };
 
         let mut live_view = LiveView::default();
-        let top = live_view.build_top(
-            &test_live_sample_with_cwd(42, u64::MAX, Some("/work")),
-            None,
-            &session_snapshot,
-            &options,
-        );
+        let sample = LiveSample {
+            procs: BTreeMap::from([(
+                42,
+                ProcInfo {
+                    pid: 42,
+                    comm: "claude".to_string(),
+                    cwd: Some(PathBuf::from("/work")),
+                    starttime_ticks: u64::MAX,
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        };
+        let top = live_view.build_top(&sample, None, &session_snapshot, &options);
 
         assert_eq!(top.rows.len(), 1);
         assert_eq!(top.rows[0].session, "claude:cwd");

@@ -269,7 +269,7 @@ pub struct ToolCallRow {
     pub confidence: Option<f32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionRow {
     pub id: String,
     pub agent_type: String,

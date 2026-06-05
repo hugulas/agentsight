@@ -244,35 +244,6 @@ fn label_from_known_package_path(path: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Instant;
-
-    fn proc_info(pid: u32, ppid: u32, comm: &str, command: &str) -> ProcInfo {
-        ProcInfo {
-            pid,
-            ppid,
-            session_id: pid,
-            comm: comm.to_string(),
-            command: command.to_string(),
-            cwd: None,
-            ticks: 0,
-            starttime_ticks: pid as u64,
-            rss_kb: 0,
-            rss_mb: 0,
-            vsz_kb: 0,
-            threads: 1,
-        }
-    }
-
-    fn snapshot(procs: Vec<ProcInfo>) -> ProcSnapshot {
-        ProcSnapshot {
-            at: Instant::now(),
-            uptime_s: 100.0,
-            procs: procs
-                .into_iter()
-                .map(|proc_info| (proc_info.pid, proc_info))
-                .collect(),
-        }
-    }
 
     #[test]
     fn known_agent_label_uses_executable_not_model_argument() {
@@ -311,24 +282,23 @@ mod tests {
 
     #[test]
     fn process_comm_matching_uses_comm_and_executable_tokens_only() {
-        let proc_info = proc_info(
-            10,
-            1,
-            "agentsight",
-            "agentsight top -c claude --model claude-sonnet",
-        );
+        let proc_info = ProcInfo {
+            comm: "agentsight".to_string(),
+            command: "agentsight top -c claude --model claude-sonnet".to_string(),
+            ..Default::default()
+        };
         assert!(!process_matches_comm(&proc_info, "claude"));
         assert!(process_matches_comm(&proc_info, "agentsight"));
     }
 
     #[test]
     fn process_comm_matching_ignores_agent_names_in_data_paths_and_shell_args() {
-        let proc_info = proc_info(
-            11,
-            1,
-            "docker",
-            "docker run image bash -c claude --settings /root/.claude/settings.json",
-        );
+        let proc_info = ProcInfo {
+            comm: "docker".to_string(),
+            command: "docker run image bash -c claude --settings /root/.claude/settings.json"
+                .to_string(),
+            ..Default::default()
+        };
 
         assert!(!process_matches_comm(&proc_info, "claude"));
         assert!(process_matches_comm(&proc_info, "docker"));
@@ -336,22 +306,64 @@ mod tests {
 
     #[test]
     fn live_roots_suppress_known_agent_children_with_same_label() {
-        let snapshot = snapshot(vec![
-            proc_info(1, 0, "node", "node /opt/npm/bin/codex"),
-            proc_info(2, 1, "codex", "codex"),
-            proc_info(3, 0, "claude", "claude"),
-        ]);
+        let procs = [
+            ProcInfo {
+                pid: 1,
+                comm: "node".to_string(),
+                command: "node /opt/npm/bin/codex".to_string(),
+                ..Default::default()
+            },
+            ProcInfo {
+                pid: 2,
+                ppid: 1,
+                comm: "codex".to_string(),
+                ..Default::default()
+            },
+            ProcInfo {
+                pid: 3,
+                comm: "claude".to_string(),
+                ..Default::default()
+            },
+        ];
+        let snapshot = ProcSnapshot {
+            procs: procs
+                .into_iter()
+                .map(|proc_info| (proc_info.pid, proc_info))
+                .collect(),
+            ..Default::default()
+        };
 
         assert_eq!(live_root_pids(&snapshot, None, None), vec![1, 3]);
     }
 
     #[test]
     fn comm_seeds_use_the_same_root_selection_as_live_roots() {
-        let snapshot = snapshot(vec![
-            proc_info(1, 0, "node", "node /opt/npm/bin/codex"),
-            proc_info(2, 1, "codex", "codex"),
-            proc_info(3, 0, "codex", "codex"),
-        ]);
+        let procs = [
+            ProcInfo {
+                pid: 1,
+                comm: "node".to_string(),
+                command: "node /opt/npm/bin/codex".to_string(),
+                ..Default::default()
+            },
+            ProcInfo {
+                pid: 2,
+                ppid: 1,
+                comm: "codex".to_string(),
+                ..Default::default()
+            },
+            ProcInfo {
+                pid: 3,
+                comm: "codex".to_string(),
+                ..Default::default()
+            },
+        ];
+        let snapshot = ProcSnapshot {
+            procs: procs
+                .into_iter()
+                .map(|proc_info| (proc_info.pid, proc_info))
+                .collect(),
+            ..Default::default()
+        };
 
         let roots = live_root_pids(&snapshot, None, Some("codex"));
         let seeds = seeds_for_comm(&snapshot, "codex");

@@ -196,10 +196,12 @@ pub(crate) fn parse_container_ref(binary_path: &str) -> Option<&str> {
 
 pub(crate) fn resolve_container_binary_arg(
     binary_path: Option<&str>,
-) -> Result<Option<String>, String> {
+) -> Result<Option<(String, String)>, String> {
     binary_path
         .and_then(parse_container_ref)
-        .map(resolve_container_binary_path)
+        .map(|reference| {
+            resolve_container_binary_path(reference).map(|path| (reference.to_string(), path))
+        })
         .transpose()
 }
 

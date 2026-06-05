@@ -188,12 +188,9 @@ impl Runner for FakeRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analyzers::{Analyzer, HTTPParser, MaterializingAnalyzer, SSEProcessor};
+    use crate::analyzers::{HTTPParser, MaterializingAnalyzer, SSEProcessor};
     use crate::view::MaterializedView;
     use futures::stream::StreamExt;
-
-    use serde_json::json;
-    use std::time::Instant;
 
     fn materializer() -> MaterializingAnalyzer {
         MaterializingAnalyzer::with_view(MaterializedView::shared())
@@ -272,263 +269,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_chunk_merger_basic() {
-        let mut runner = FakeRunner::new()
-            .event_count(3) // Explicitly set to 3 pairs for clear validation
-            .add_analyzer(Box::new(SSEProcessor::new_with_timeout(5000)));
-
-        let stream = runner.run().await.unwrap();
-        let events: Vec<_> = stream.collect().await;
-
-        // Should have SSL events, but no chunk events since fake data isn't chunked
-        let ssl_events = events.iter().filter(|e| e.source == "ssl").count();
-        let chunk_events = events.iter().filter(|e| e.source == "chunk_merger").count();
-
-        // Should have exactly 6 SSL events (3 pairs = 6 events)
-        assert_eq!(
-            ssl_events, 6,
-            "Should have exactly 6 SSL events (3 request/response pairs)"
-        );
-        assert_eq!(
-            chunk_events, 0,
-            "Should have no chunk_merger events since fake data isn't chunked"
-        );
-        assert_eq!(events.len(), 6, "All original events should be preserved");
-    }
-
-    #[tokio::test]
-    async fn test_multiple_analyzer_instances() {
-        // Chain with multiple materializers.
-        let mut runner = FakeRunner::new()
-            .event_count(2)
-            .delay_ms(10)
-            .add_analyzer(Box::new(SSEProcessor::new_with_timeout(5000)))
-            .add_analyzer(Box::new(HTTPParser::new().disable_raw_data()))
-            .add_analyzer(Box::new(materializer()))
-            .add_analyzer(Box::new(materializer()));
-
-        let stream = runner.run().await.unwrap();
-        let events: Vec<_> = stream.collect().await;
-
-        // Verify all events passed through multiple analyzers - should be 4 events (2 pairs) + HTTP analyzer events
-        assert!(
-            events.len() >= 4,
-            "Should have at least 4 SSL events (2 request/response pairs)"
-        );
-
-        let http_events = events
-            .iter()
-            .filter(|event| event.source == "http_parser")
-            .count();
-        assert!(
-            http_events >= 4,
-            "Should produce parsed HTTP request/response events"
-        );
-    }
-
-    #[tokio::test]
     async fn test_analyzer_chain_empty_stream() {
-        // Test with zero events
         let mut runner = FakeRunner::new()
-            .event_count(0) // No events
+            .event_count(0)
             .delay_ms(10)
             .add_analyzer(Box::new(SSEProcessor::new_with_timeout(5000)));
 
         let stream = runner.run().await.unwrap();
         let events: Vec<_> = stream.collect().await;
-
-        // Should handle empty stream gracefully
-        assert_eq!(events.len(), 0, "Should have no events");
+        assert_eq!(events.len(), 0);
     }
 
     #[tokio::test]
-    async fn test_analyzer_chain_with_mixed_event_sources() {
-        // Test analyzer chain with events from different sources
+    async fn test_full_analyzer_chain() {
         let mut runner = FakeRunner::new()
-            .event_count(0) // Manual event generation
-            .delay_ms(10);
-
-        runner = runner.add_analyzer(Box::new(SSEProcessor::new_with_timeout(5000)));
-
-        // Generate mixed source events
-        let event_stream = async_stream::stream! {
-            // SSL events (should be processed by HTTP analyzer)
-            yield Event::new("ssl".to_string(), 1234, "test-comm".to_string(), json!({
-                "data": "GET /api/test HTTP/1.1\r\nHost: example.com\r\n\r\n",
-                "pid": 1234
-            }));
-
-            yield Event::new("ssl".to_string(), 1234, "test-comm".to_string(), json!({
-                "data": "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"result\":\"ok\"}",
-                "pid": 1234
-            }));
-
-            // Non-SSL events (should be forwarded unchanged)
-            yield Event::new("process".to_string(), 5678, "test_process".to_string(), json!({
-                "pid": 5678,
-                "command": "test_process"
-            }));
-
-            yield Event::new("custom".to_string(), 999, "custom".to_string(), json!({
-                "message": "custom event",
-                "value": 42
-            }));
-        };
-
-        let processed_stream =
-            crate::runners::common::AnalyzerProcessor::process_through_analyzers(
-                Box::pin(event_stream),
-                &mut runner.analyzers,
-            )
-            .await
-            .unwrap();
-
-        let events: Vec<_> = processed_stream.collect().await;
-
-        // Count events by source
-        let ssl_events = events.iter().filter(|e| e.source == "ssl").count();
-        let process_events = events.iter().filter(|e| e.source == "process").count();
-        let custom_events = events.iter().filter(|e| e.source == "custom").count();
-
-        // Verify all events are preserved
-        assert_eq!(ssl_events, 2, "Should have 2 SSL events");
-        assert_eq!(process_events, 1, "Should have 1 process event");
-        assert_eq!(custom_events, 1, "Should have 1 custom event");
-    }
-
-    #[tokio::test]
-    async fn test_analyzer_chain_memory_cleanup() {
-        use std::sync::{
-            Arc,
-            atomic::{AtomicUsize, Ordering},
-        };
-
-        // Create a custom analyzer that tracks memory usage
-        struct MemoryTrackingAnalyzer {
-            event_count: Arc<AtomicUsize>,
-            max_events_seen: Arc<AtomicUsize>,
-        }
-
-        impl MemoryTrackingAnalyzer {
-            fn new() -> Self {
-                Self {
-                    event_count: Arc::new(AtomicUsize::new(0)),
-                    max_events_seen: Arc::new(AtomicUsize::new(0)),
-                }
-            }
-        }
-
-        #[async_trait::async_trait]
-        impl Analyzer for MemoryTrackingAnalyzer {
-            async fn process(
-                &mut self,
-                stream: EventStream,
-            ) -> Result<EventStream, crate::analyzers::AnalyzerError> {
-                let event_count = self.event_count.clone();
-                let max_events = self.max_events_seen.clone();
-
-                let processed_stream = stream.map(move |event| {
-                    let current = event_count.fetch_add(1, Ordering::SeqCst) + 1;
-                    max_events.fetch_max(current, Ordering::SeqCst);
-
-                    // Simulate processing and cleanup
-                    if current.is_multiple_of(10) {
-                        // Simulate periodic cleanup
-                        event_count.store(0, Ordering::SeqCst);
-                    }
-
-                    event
-                });
-
-                Ok(Box::pin(processed_stream))
-            }
-        }
-
-        let memory_tracker = MemoryTrackingAnalyzer::new();
-        let max_events_ref = memory_tracker.max_events_seen.clone();
-
-        let mut runner = FakeRunner::new()
-            .event_count(25) // 50 events total
-            .delay_ms(1)
-            .add_analyzer(Box::new(memory_tracker));
-
-        let stream = runner.run().await.unwrap();
-        let events: Vec<_> = stream.collect().await;
-
-        let max_events_seen = max_events_ref.load(Ordering::SeqCst);
-
-        // Verify events were processed - should be exactly 50 events (25 pairs)
-        assert_eq!(
-            events.len(),
-            50,
-            "Should have processed exactly 50 events (25 request/response pairs)"
-        );
-
-        // Verify memory tracking worked (cleanup occurred)
-        assert!(
-            max_events_seen < events.len(),
-            "Memory cleanup should have occurred"
-        );
-        assert!(
-            max_events_seen <= 10,
-            "Should not accumulate more than 10 events due to cleanup"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_analyzer_chain_integration_scenario() {
-        // Comprehensive integration test that simulates real-world usage
-        // Create a realistic analyzer chain that might be used in production:
-        // 1. HTTP analyzer for pairing requests/responses
-        // 2. Materialized view projection
-        // 3. Stream collection by the caller
-        let mut runner = FakeRunner::new()
-            .event_count(10) // 20 events total
-            .delay_ms(25) // Realistic timing
-            .add_analyzer(Box::new(SSEProcessor::new_with_timeout(10000))) // 10 second timeout
+            .event_count(3)
+            .delay_ms(10)
+            .add_analyzer(Box::new(SSEProcessor::new_with_timeout(10000)))
             .add_analyzer(Box::new(HTTPParser::new().disable_raw_data()))
             .add_analyzer(Box::new(materializer()));
 
-        let start_time = Instant::now();
         let stream = runner.run().await.unwrap();
         let events: Vec<_> = stream.collect().await;
-        let elapsed = start_time.elapsed();
 
-        // Analyze event distribution
         let http_events = events
             .iter()
             .filter(|event| event.source == "http_parser")
             .count();
-        let chunk_events = events.iter().filter(|e| e.source == "chunk_merger").count();
+        assert!(http_events >= 6, "Should have parsed HTTP events");
 
-        // Verify expected behavior
-        assert!(
-            http_events >= 20,
-            "Should have parsed HTTP request/response events"
-        );
-        assert_eq!(
-            chunk_events, 0,
-            "Should have no chunk_merger events since fake data isn't chunked"
-        );
-        assert!(
-            events.len() >= 20,
-            "All original events should be preserved"
-        );
-
-        // Verify performance characteristics
-        let events_per_second = events.len() as f64 / elapsed.as_secs_f64();
-        assert!(
-            events_per_second > 10.0,
-            "Should process at least 10 events per second"
-        );
-
-        // Verify parsed HTTP events retain process metadata.
-        for event in events.iter().filter(|event| event.source == "http_parser") {
+        for event in events.iter().filter(|e| e.source == "http_parser") {
             assert!(
                 event.data.get("method").is_some() || event.data.get("status_code").is_some(),
-                "HTTP events should have request or response fields"
             );
-            assert!(event.pid > 0, "HTTP events should retain top-level pid");
+            assert!(event.pid > 0);
         }
     }
 

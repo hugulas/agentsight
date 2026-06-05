@@ -30,7 +30,10 @@ pub(crate) async fn run_raw_ssl(
 
     let container_resolved =
         resolve_container_binary_arg(binary_path).map_err(RunnerError::from)?;
-    let binary_path = container_resolved.as_deref().or(binary_path);
+    let binary_path = container_resolved
+        .as_ref()
+        .map(|(_, path)| path.as_str())
+        .or(binary_path);
 
     let mut final_args = Vec::new();
     if let Some(path) = binary_path {

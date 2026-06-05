@@ -931,7 +931,6 @@ async fn run_with_extractor(
                 let cfg = TraceConfig {
                     ssl: *ssl,
                     pid: *pid,
-                    session_id: None,
                     ssl_uid: *ssl_uid,
                     comm: comm.clone(),
                     ssl_filter: ssl_filter.clone(),
@@ -939,7 +938,6 @@ async fn run_with_extractor(
                     ssl_http: *ssl_http,
                     ssl_raw_data: *ssl_raw_data,
                     process: *process,
-                    process_seed_pids: Vec::new(),
                     stdio: *stdio,
                     stdio_uid: *stdio_uid,
                     stdio_comm: stdio_comm.clone(),
@@ -961,6 +959,7 @@ async fn run_with_extractor(
                     server: *server,
                     server_listen: Some(cli.listen.clone()),
                     server_port: *server_port,
+                    ..Default::default()
                 };
                 run_trace(&binary_extractor, cfg)
                     .await

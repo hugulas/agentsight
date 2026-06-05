@@ -17,7 +17,7 @@ pub(crate) const TRACE_RECENT_CWD: &str = "cwd_recent";
 const SOURCE_VIEW_MATCH: &str = "view.session_process_match";
 const SESSION_PROCESS_START_SKEW_MS: u64 = 30_000;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct LiveProcessCandidate {
     pub(crate) tree: ProcessTree,
     pub(crate) agent: String,
@@ -237,7 +237,7 @@ fn collect_path_evidence(
     out
 }
 
-fn session_path_from_raw_path(path: &Path) -> Option<PathBuf> {
+pub(crate) fn session_path_from_raw_path(path: &Path) -> Option<PathBuf> {
     agent_native::session_log_path_from_str(&path.to_string_lossy())
 }
 
@@ -313,14 +313,8 @@ mod tests {
             agent_type: agent.to_string(),
             start_timestamp_ms: end_ms.saturating_sub(1000),
             end_timestamp_ms: Some(end_ms),
-            status: "observed".to_string(),
-            model: None,
-            input_tokens: 0,
-            output_tokens: 0,
-            total_tokens: 1,
-            view_source: "test".to_string(),
-            confidence: Some(0.9),
             attributes: json!({ "path": path.to_string_lossy(), "cwd": "/work" }),
+            ..Default::default()
         }
     }
 

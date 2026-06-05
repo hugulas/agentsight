@@ -93,7 +93,7 @@ impl TopOptions {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct AgentTopRow {
     pub(crate) session: String,
     pub(crate) agent: String,
@@ -1015,35 +1015,17 @@ fn collect_content_text(value: &Value, out: &mut Vec<String>) {
 mod tests {
     use super::*;
 
-    fn top_row(trace: &str, failures: usize) -> AgentTopRow {
-        AgentTopRow {
-            session: "s".to_string(),
-            agent: "codex".to_string(),
-            pid: Some(1),
-            model: None,
-            age_s: None,
-            cpu_percent: 0.0,
-            rss_mb: 0,
-            processes: 1,
-            tokens: None,
-            tools: 0,
-            execs: 0,
-            failures,
-            files: 0,
-            network: 0,
-            unattributed: 0,
-            trace: trace.to_string(),
-            command: "codex".to_string(),
-            workspace: None,
-            last_message_at: None,
-            tool_breakdown: Vec::new(),
-            file_breakdown: Vec::new(),
-        }
-    }
-
     #[test]
     fn live_top_row_stays_live_when_child_process_failed() {
-        assert_eq!(top_row("agent-native+proc+ebpf", 1).state_label(), "live");
-        assert_eq!(top_row("db", 1).state_label(), "failed");
+        let mut row = AgentTopRow {
+            failures: 1,
+            ..Default::default()
+        };
+
+        row.trace = "agent-native+proc+ebpf".to_string();
+        assert_eq!(row.state_label(), "live");
+
+        row.trace = "db".to_string();
+        assert_eq!(row.state_label(), "failed");
     }
 }
