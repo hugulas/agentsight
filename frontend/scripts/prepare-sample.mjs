@@ -31,6 +31,9 @@ const toMs = (ts) =>
 let idCounter = 0;
 const nextId = () => `evt-${++idCounter}`;
 
+const truncate = (s, limit) =>
+  typeof s === 'string' && s.length > limit ? s.slice(0, limit) + '... [truncated]' : s;
+
 const auditEvents = [];
 const processNodes = new Map();
 const tokenSummary = new Map();
@@ -78,32 +81,41 @@ for (const line of lines) {
       });
     }
   } else if (raw.source === 'http_parser') {
-    llmCalls++;
-    const model = d.model || d.headers?.['x-model'] || 'unknown';
-    const inp = d.input_tokens || d.usage?.input_tokens || 0;
-    const out = d.output_tokens || d.usage?.output_tokens || 0;
-    const existing = tokenSummary.get(model) || { group: model, input_tokens: 0, output_tokens: 0, total_tokens: 0, calls: 0 };
-    existing.input_tokens += inp;
-    existing.output_tokens += out;
-    existing.total_tokens += inp + out;
-    existing.calls++;
-    tokenSummary.set(model, existing);
+    const msgType = d.message_type || 'request';
+    let bodyObj = null;
+    if (typeof d.body === 'string' && d.body) {
+      try { bodyObj = JSON.parse(d.body); } catch {}
+    }
+    const model = bodyObj?.model || d.model || d.headers?.['x-model'] || null;
+    if (msgType === 'request') llmCalls++;
 
+    if (model) {
+      const inp = bodyObj?.usage?.input_tokens || d.input_tokens || 0;
+      const out = bodyObj?.usage?.output_tokens || d.output_tokens || 0;
+      const existing = tokenSummary.get(model) || { group: model, input_tokens: 0, output_tokens: 0, total_tokens: 0, calls: 0 };
+      existing.input_tokens += inp;
+      existing.output_tokens += out;
+      existing.total_tokens += inp + out;
+      existing.calls++;
+      tokenSummary.set(model, existing);
+    }
+
+    const action = msgType === 'request' ? 'request' : 'response';
     auditEvents.push({
       id: nextId(), timestamp_ms: ts, audit_type: 'llm',
-      pid, comm, action: 'http_request',
-      target: d.url || d.path || null,
+      pid, comm, action, subject: model,
+      target: d.path || d.url || null,
       status: 'observed',
-      summary: `LLM call${model !== 'unknown' ? ` (${model})` : ''}`,
-      details: { method: d.method, status_code: d.status_code, model },
+      summary: `${action === 'request' ? 'LLM request' : 'LLM response'}${model ? ` (${model})` : ''}`,
+      details: { method: d.method, status_code: d.status_code, model, body: truncate(d.body, 2000) },
     });
   } else if (raw.source === 'sse_processor') {
     auditEvents.push({
       id: nextId(), timestamp_ms: ts, audit_type: 'llm',
-      pid, comm, action: 'sse_stream',
+      pid, comm, action: 'response', subject: null,
       status: 'observed',
-      summary: `SSE stream event`,
-      details: d,
+      summary: `SSE stream response`,
+      details: { json_content: d.json_content, text_content: d.text_content, event_count: d.event_count, message_id: d.message_id },
     });
   } else if (raw.source === 'ssl') {
     auditEvents.push({

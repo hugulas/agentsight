@@ -10,6 +10,11 @@ use futures::{stream, stream::StreamExt};
 use hpack::Decoder as HpackDecoder;
 use std::collections::HashMap;
 
+const MAX_HTTP2_STREAMS: usize = 1024;
+const MAX_HTTP2_PENDING_HEADERS: usize = 1024;
+const MAX_HTTP2_BODY_BYTES: usize = 1024 * 1024;
+const MAX_HTTP2_HEADER_BLOCK_BYTES: usize = 64 * 1024;
+
 /// HTTP Parser Analyzer that parses SSL traffic into HTTP requests/responses
 pub struct HTTPParser {
     /// Flag to include raw data in parsed events (default: true)
@@ -344,7 +349,7 @@ impl HTTP2State {
                     let state = self.streams.entry(key).or_default();
                     match direction {
                         HTTP2Direction::Request => {
-                            state.request_body.extend_from_slice(payload);
+                            extend_capped(&mut state.request_body, payload, MAX_HTTP2_BODY_BYTES);
                             if frame.flags & 0x1 != 0 && !state.request_emitted {
                                 events.push(create_http2_request_event(
                                     tid,
@@ -357,7 +362,7 @@ impl HTTP2State {
                             }
                         }
                         HTTP2Direction::Response => {
-                            state.response_body.extend_from_slice(payload);
+                            extend_capped(&mut state.response_body, payload, MAX_HTTP2_BODY_BYTES);
                             if (frame.flags & 0x1 != 0
                                 || looks_like_complete_json(&state.response_body))
                                 && !state.response_emitted
@@ -409,7 +414,7 @@ impl HTTP2State {
                                 }
                             }
                         }
-                    } else {
+                    } else if fragment.len() <= MAX_HTTP2_HEADER_BLOCK_BYTES {
                         self.pending_headers.insert(
                             key,
                             PendingHTTP2Headers {
@@ -417,6 +422,7 @@ impl HTTP2State {
                                 block: fragment.to_vec(),
                             },
                         );
+                        evict_over_capacity(&mut self.pending_headers, MAX_HTTP2_PENDING_HEADERS);
                     }
                 }
                 0x9 => {
@@ -427,6 +433,9 @@ impl HTTP2State {
                         continue;
                     };
                     pending.block.extend_from_slice(frame.payload);
+                    if pending.block.len() > MAX_HTTP2_HEADER_BLOCK_BYTES {
+                        continue;
+                    }
                     if frame.flags & 0x4 != 0 {
                         if let Some(headers) =
                             self.decode_headers(pending.direction, &pending.block)
@@ -449,6 +458,7 @@ impl HTTP2State {
             {
                 self.streams.remove(&key);
             }
+            evict_over_capacity(&mut self.streams, MAX_HTTP2_STREAMS);
         }
 
         Some(if events.is_empty() {
@@ -714,6 +724,23 @@ impl Analyzer for HTTPParser {
         });
 
         Ok(Box::pin(processed_stream))
+    }
+}
+
+fn extend_capped(buffer: &mut Vec<u8>, data: &[u8], max: usize) {
+    buffer.extend_from_slice(data);
+    let overflow = buffer.len().saturating_sub(max);
+    if overflow > 0 {
+        buffer.drain(0..overflow);
+    }
+}
+
+fn evict_over_capacity<T>(map: &mut HashMap<(u64, u32), T>, max: usize) {
+    while map.len() > max {
+        let Some(key) = map.keys().next().copied() else {
+            break;
+        };
+        map.remove(&key);
     }
 }
 

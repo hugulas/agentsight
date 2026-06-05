@@ -190,7 +190,7 @@ pub(crate) async fn run_exec(
     };
 
     prepare_process_seeds(&mut cfg)?;
-    let live_view = MaterializedView::shared();
+    let live_view = MaterializedView::shared_bounded();
     let mut agent = build_trace_agent_with_view(binary_extractor, &cfg, live_view.clone())?;
 
     let server_handle =

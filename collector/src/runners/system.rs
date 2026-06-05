@@ -153,6 +153,7 @@ fn create_system_event_stream(config: SystemConfig) -> Pin<Box<dyn Stream<Item =
                 }
             };
             let timestamp = (snapshot.uptime_s * 1_000_000_000.0) as u64;
+            previous_stats.retain(|pid, _| snapshot.procs.contains_key(pid));
 
             if let Some(session_id) = config.session_id {
                 let pids = snapshot.pids_in_session(session_id);

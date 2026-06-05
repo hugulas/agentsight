@@ -26,6 +26,9 @@ use std::sync::{Arc, Mutex};
 
 pub(crate) type SharedMaterializedView = Arc<Mutex<MaterializedView>>;
 
+const MAX_AUDIT_EVENTS_IN_MEMORY: usize = 20_000;
+const MAX_RESOURCE_SAMPLES_IN_MEMORY: usize = 10_000;
+
 pub(crate) struct MaterializedView {
     source: String,
     llm_calls: BTreeMap<String, LlmCallRow>,
@@ -36,10 +39,28 @@ pub(crate) struct MaterializedView {
     sessions: BTreeMap<String, SessionRow>,
     network_targets: BTreeMap<String, NetworkTargetRow>,
     resource_samples: Vec<ResourceSampleRow>,
+    audit_order: VecDeque<String>,
     sinks: Vec<Box<dyn ViewSink>>,
     pending: HashMap<(u32, u64), VecDeque<PendingRequest>>,
     active_processes: HashMap<u32, String>,
+    counts: ViewCounts,
+    start_timestamp_ms: Option<u64>,
+    end_timestamp_ms: Option<u64>,
+    max_audit_events: Option<usize>,
+    max_resource_samples: Option<usize>,
     next_seq: u64,
+}
+
+#[derive(Default)]
+struct ViewCounts {
+    llm_calls: i64,
+    token_usage: i64,
+    audit_events: i64,
+    process_nodes: i64,
+    tool_calls: i64,
+    sessions: i64,
+    network_targets: i64,
+    resource_samples: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -68,15 +89,32 @@ impl MaterializedView {
             sessions: BTreeMap::new(),
             network_targets: BTreeMap::new(),
             resource_samples: Vec::new(),
+            audit_order: VecDeque::new(),
             sinks: Vec::new(),
             pending: HashMap::new(),
             active_processes: HashMap::new(),
+            counts: ViewCounts::default(),
+            start_timestamp_ms: None,
+            end_timestamp_ms: None,
+            max_audit_events: None,
+            max_resource_samples: None,
             next_seq: 0,
         }
     }
 
+    pub(crate) fn bounded() -> Self {
+        let mut view = Self::new();
+        view.max_audit_events = Some(MAX_AUDIT_EVENTS_IN_MEMORY);
+        view.max_resource_samples = Some(MAX_RESOURCE_SAMPLES_IN_MEMORY);
+        view
+    }
+
     pub(crate) fn shared() -> SharedMaterializedView {
         Arc::new(Mutex::new(Self::new()))
+    }
+
+    pub(crate) fn shared_bounded() -> SharedMaterializedView {
+        Arc::new(Mutex::new(Self::bounded()))
     }
 
     pub(crate) fn add_sink(&mut self, sink: Box<dyn ViewSink>) {
@@ -142,27 +180,66 @@ impl MaterializedView {
 
 impl MaterializedView {
     pub(crate) fn apply_llm_call(&mut self, row: &LlmCallRow) {
+        if !self.llm_calls.contains_key(&row.id) {
+            self.counts.llm_calls += 1;
+        }
+        self.observe(Some(row.start_timestamp_ms));
+        self.observe(row.end_timestamp_ms);
         self.llm_calls.insert(row.id.clone(), row.clone());
     }
 
     pub(crate) fn apply_token_usage(&mut self, row: &TokenUsageRow) {
+        if !self.token_usage.contains_key(&row.id) {
+            self.counts.token_usage += 1;
+        }
+        self.observe(Some(row.timestamp_ms));
         self.token_usage.insert(row.id.clone(), row.clone());
     }
 
     pub(crate) fn apply_audit_event(&mut self, row: &AuditEventRow) {
+        if !self.audit_events.contains_key(&row.id) {
+            self.counts.audit_events += 1;
+            if self.max_audit_events.is_some() {
+                self.audit_order.push_back(row.id.clone());
+            }
+        }
+        self.observe(Some(row.timestamp_ms));
         self.audit_events.insert(row.id.clone(), row.clone());
+        if let Some(max) = self.max_audit_events {
+            while self.audit_events.len() > max {
+                let Some(id) = self.audit_order.pop_front() else {
+                    break;
+                };
+                self.audit_events.remove(&id);
+            }
+        }
     }
 
     pub(crate) fn apply_tool_call(&mut self, row: &ToolCallRow) {
+        if !self.tool_calls.contains_key(&row.id) {
+            self.counts.tool_calls += 1;
+        }
+        self.observe(Some(row.timestamp_ms));
         self.tool_calls.insert(row.id.clone(), row.clone());
     }
 
     pub(crate) fn apply_resource_sample(&mut self, row: &ResourceSampleRow) {
+        self.counts.resource_samples += 1;
+        self.observe(Some(row.timestamp_ms));
         self.resource_samples.push(row.clone());
+        if let Some(max) = self.max_resource_samples {
+            let overflow = self.resource_samples.len().saturating_sub(max);
+            if overflow > 0 {
+                self.resource_samples.drain(0..overflow);
+            }
+        }
     }
 
     pub(crate) fn upsert_session(&mut self, row: &SessionRow) {
+        self.observe(Some(row.start_timestamp_ms));
+        self.observe(row.end_timestamp_ms);
         let Some(existing) = self.sessions.get_mut(&row.id) else {
+            self.counts.sessions += 1;
             self.sessions.insert(row.id.clone(), row.clone());
             return;
         };
@@ -180,8 +257,11 @@ impl MaterializedView {
     }
 
     pub(crate) fn upsert_network_target(&mut self, row: &NetworkTargetRow) {
+        self.observe(row.first_timestamp_ms);
+        self.observe(row.last_timestamp_ms);
         let key = network_target_key(row);
         let Some(existing) = self.network_targets.get_mut(&key) else {
+            self.counts.network_targets += 1;
             self.network_targets.insert(key, row.clone());
             return;
         };
@@ -195,7 +275,10 @@ impl MaterializedView {
     }
 
     pub(crate) fn upsert_process_node(&mut self, row: &ProcessNodeRow) {
+        self.observe(row.start_timestamp_ms);
+        self.observe(row.end_timestamp_ms);
         let Some(existing) = self.process_nodes.get_mut(&row.id) else {
+            self.counts.process_nodes += 1;
             self.process_nodes.insert(row.id.clone(), row.clone());
             return;
         };
@@ -246,40 +329,6 @@ impl MaterializedView {
     }
 
     fn snapshot_summary(&self, options: SnapshotOptions) -> SnapshotSummary {
-        let mut start_timestamp_ms = None;
-        let mut end_timestamp_ms = None;
-        let mut observe = |timestamp| {
-            observe_timestamp(&mut start_timestamp_ms, &mut end_timestamp_ms, timestamp);
-        };
-
-        for row in self.llm_calls.values() {
-            observe(Some(row.start_timestamp_ms));
-            observe(row.end_timestamp_ms);
-        }
-        for row in self.token_usage.values() {
-            observe(Some(row.timestamp_ms));
-        }
-        for row in self.audit_events.values() {
-            observe(Some(row.timestamp_ms));
-        }
-        for row in self.process_nodes.values() {
-            observe(row.start_timestamp_ms);
-            observe(row.end_timestamp_ms);
-        }
-        for row in self.tool_calls.values() {
-            observe(Some(row.timestamp_ms));
-        }
-        for row in self.network_targets.values() {
-            observe(row.first_timestamp_ms);
-            observe(row.last_timestamp_ms);
-        }
-        for row in self.sessions.values() {
-            observe(Some(row.start_timestamp_ms));
-            observe(row.end_timestamp_ms);
-        }
-        for row in &self.resource_samples {
-            observe(Some(row.timestamp_ms));
-        }
         let (input_tokens, output_tokens, total_tokens) =
             self.effective_tokens()
                 .into_iter()
@@ -298,15 +347,15 @@ impl MaterializedView {
                 self.source.clone()
             },
             view_events: self.view_events(),
-            llm_calls: self.llm_calls.len() as i64,
-            token_usage_rows: self.token_usage.len() as i64,
-            audit_events: self.audit_events.len() as i64,
-            sessions: self.sessions.len() as i64,
+            llm_calls: self.counts.llm_calls,
+            token_usage_rows: self.counts.token_usage,
+            audit_events: self.counts.audit_events,
+            sessions: self.counts.sessions,
             input_tokens,
             output_tokens,
             total_tokens,
-            start_timestamp_ms,
-            end_timestamp_ms,
+            start_timestamp_ms: self.start_timestamp_ms,
+            end_timestamp_ms: self.end_timestamp_ms,
             audit_limit: options.audit_limit,
         }
     }
@@ -397,7 +446,10 @@ impl MaterializedView {
                 .cmp(&b.timestamp_ms)
                 .then_with(|| a.id.cmp(&b.id))
         });
-        rows.truncate(limit.min(100_000));
+        let limit = limit.min(100_000);
+        if rows.len() > limit {
+            rows.drain(0..rows.len() - limit);
+        }
         rows
     }
 
@@ -423,14 +475,14 @@ impl MaterializedView {
     }
 
     fn view_events(&self) -> i64 {
-        (self.llm_calls.len()
-            + self.token_usage.len()
-            + self.audit_events.len()
-            + self.process_nodes.len()
-            + self.tool_calls.len()
-            + self.sessions.len()
-            + self.network_targets.len()
-            + self.resource_samples.len()) as i64
+        self.counts.llm_calls
+            + self.counts.token_usage
+            + self.counts.audit_events
+            + self.counts.process_nodes
+            + self.counts.tool_calls
+            + self.counts.sessions
+            + self.counts.network_targets
+            + self.counts.resource_samples
     }
 
     fn effective_tokens(&self) -> Vec<&TokenUsageRow> {
@@ -460,6 +512,14 @@ impl MaterializedView {
             );
         }
         totals
+    }
+
+    fn observe(&mut self, timestamp: Option<u64>) {
+        observe_timestamp(
+            &mut self.start_timestamp_ms,
+            &mut self.end_timestamp_ms,
+            timestamp,
+        );
     }
 }
 
@@ -539,5 +599,75 @@ fn max_optional<T: PartialOrd>(left: Option<T>, right: Option<T>) -> Option<T> {
         (Some(left), Some(right)) => Some(if left >= right { left } else { right }),
         (Some(value), None) | (None, Some(value)) => Some(value),
         (None, None) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn audit_row(timestamp_ms: u64) -> AuditEventRow {
+        AuditEventRow {
+            id: format!("audit-{timestamp_ms}"),
+            timestamp_ms,
+            audit_type: "file".to_string(),
+            pid: Some(1),
+            comm: Some("test".to_string()),
+            subject: None,
+            action: Some("write".to_string()),
+            target: Some(format!("/tmp/{timestamp_ms}")),
+            status: Some("observed".to_string()),
+            summary: None,
+            details: json!({}),
+        }
+    }
+
+    #[test]
+    fn audit_retention_keeps_counters_and_recent_rows() {
+        let mut view = MaterializedView::bounded();
+        for timestamp_ms in 0..(MAX_AUDIT_EVENTS_IN_MEMORY as u64 + 5) {
+            view.apply_audit_event(&audit_row(timestamp_ms));
+        }
+
+        let snapshot = view.export_snapshot(SnapshotOptions {
+            audit_limit: MAX_AUDIT_EVENTS_IN_MEMORY + 10,
+        });
+        assert_eq!(
+            snapshot.summary.audit_events,
+            MAX_AUDIT_EVENTS_IN_MEMORY as i64 + 5
+        );
+        assert_eq!(snapshot.audit_events.len(), MAX_AUDIT_EVENTS_IN_MEMORY);
+        assert_eq!(snapshot.audit_events[0].timestamp_ms, 5);
+        assert_eq!(snapshot.summary.start_timestamp_ms, Some(0));
+        assert_eq!(
+            snapshot.summary.end_timestamp_ms,
+            Some(MAX_AUDIT_EVENTS_IN_MEMORY as u64 + 4)
+        );
+    }
+
+    #[test]
+    fn resource_retention_keeps_counters() {
+        let mut view = MaterializedView::bounded();
+        for timestamp_ms in 0..(MAX_RESOURCE_SAMPLES_IN_MEMORY as u64 + 5) {
+            view.apply_resource_sample(&ResourceSampleRow {
+                timestamp_ms,
+                pid: Some(1),
+                comm: Some("test".to_string()),
+                cpu_percent: Some(1.0),
+                rss_mb: Some(2),
+            });
+        }
+
+        let snapshot = view.export_snapshot(SnapshotOptions { audit_limit: 0 });
+        assert_eq!(
+            snapshot.summary.view_events,
+            MAX_RESOURCE_SAMPLES_IN_MEMORY as i64 + 5
+        );
+        assert_eq!(
+            snapshot.resource_samples.len(),
+            MAX_RESOURCE_SAMPLES_IN_MEMORY
+        );
+        assert_eq!(snapshot.resource_samples[0].timestamp_ms, 5);
     }
 }

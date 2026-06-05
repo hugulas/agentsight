@@ -351,7 +351,7 @@ pub(crate) async fn run_trace(
     let server_port = cfg.server_port;
 
     prepare_process_seeds(&mut cfg)?;
-    let live_view = MaterializedView::shared();
+    let live_view = MaterializedView::shared_bounded();
     let mut agent = build_trace_agent_with_view(binary_extractor, &cfg, live_view.clone())?;
 
     print_trace_start(agent.runner_count(), agent.analyzer_count());
@@ -492,7 +492,7 @@ pub(crate) async fn run_debug_runner<R: Runner>(
     server_listen: &str,
     server_port: u16,
 ) -> Result<(), RunnerError> {
-    let live_view = MaterializedView::shared();
+    let live_view = MaterializedView::shared_bounded();
     let mut runner = runner.add_analyzer(Box::new(MaterializingAnalyzer::with_view(
         live_view.clone(),
     )));

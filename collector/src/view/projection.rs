@@ -3,15 +3,15 @@
 
 use crate::event::Event;
 use crate::json::{i64_field as json_i64, parse_optional_value as parse_optional_json};
+use crate::model::{
+    AuditEventRow, LlmCallRow, NetworkTargetRow, ProcessNodeRow, ResourceSampleRow, TokenUsageRow,
+    ToolCallRow, ViewResult,
+};
+use crate::text::sanitize_ascii_identifier as sanitize_id;
 use crate::view::llm::TokenUsage;
 use crate::view::{
     CanonicalEvent, EventKind, body_json, extract_model, extract_token_usage,
     extract_token_usage_from_sse, normalize_event, provider_from_host,
-};
-use crate::text::sanitize_ascii_identifier as sanitize_id;
-use crate::model::{
-    AuditEventRow, LlmCallRow, NetworkTargetRow, ProcessNodeRow, ResourceSampleRow, TokenUsageRow,
-    ToolCallRow, ViewResult,
 };
 use crate::view::{MaterializedView, PendingRequest};
 use serde_json::Value;
@@ -308,9 +308,7 @@ impl MaterializedView {
         let usage = if resp.source == "sse_processor" {
             extract_token_usage_from_sse(&resp.attributes)
         } else {
-            response_body
-                .map(extract_token_usage)
-                .unwrap_or_default()
+            response_body.map(extract_token_usage).unwrap_or_default()
         };
         let mut usage_row = None;
         if !usage.is_empty() {
@@ -925,8 +923,7 @@ mod tests {
         view.ingest_event(&req).expect("ingest request");
         view.ingest_event(&resp).expect("ingest response");
 
-        let snapshot =
-            view.export_snapshot(crate::model::SnapshotOptions { audit_limit: 100 });
+        let snapshot = view.export_snapshot(crate::model::SnapshotOptions { audit_limit: 100 });
         let llm_actions = snapshot
             .audit_events
             .iter()

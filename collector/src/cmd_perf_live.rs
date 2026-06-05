@@ -26,7 +26,7 @@ struct LiveCaptureState {
 impl Default for LiveCaptureState {
     fn default() -> Self {
         Self {
-            view: MaterializedView::new(),
+            view: MaterializedView::bounded(),
             parse_errors: 0,
         }
     }
