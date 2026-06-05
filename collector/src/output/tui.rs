@@ -564,7 +564,7 @@ fn aggregate_to_dirs(items: &[(String, i64)]) -> Vec<(String, i64)> {
         *dir_counts.entry(dir.to_string()).or_insert(0i64) += count;
     }
     let mut sorted: Vec<_> = dir_counts.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted.sort_by_key(|b| std::cmp::Reverse(b.1));
     sorted.truncate(5);
     sorted
 }

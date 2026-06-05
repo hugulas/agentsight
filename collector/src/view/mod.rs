@@ -343,7 +343,7 @@ impl MaterializedView {
             .filter(|row| audit_type.is_none_or(|audit_type| row.audit_type == audit_type))
             .cloned()
             .collect::<Vec<_>>();
-        rows.sort_by(|a, b| b.timestamp_ms.cmp(&a.timestamp_ms));
+        rows.sort_by_key(|b| std::cmp::Reverse(b.timestamp_ms));
         rows.truncate(limit.clamp(1, 10_000));
         rows
     }
@@ -363,7 +363,7 @@ impl MaterializedView {
                 row
             })
             .collect::<Vec<_>>();
-        rows.sort_by(|a, b| b.start_timestamp_ms.cmp(&a.start_timestamp_ms));
+        rows.sort_by_key(|b| std::cmp::Reverse(b.start_timestamp_ms));
         rows.truncate(limit.clamp(1, 10_000));
         rows
     }

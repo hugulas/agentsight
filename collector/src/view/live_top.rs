@@ -283,7 +283,7 @@ impl LiveView {
                     *counts.entry(row.agent.clone()).or_insert(0i64) += row.processes.max(1) as i64;
                 }
                 let mut sorted: Vec<_> = counts.into_iter().collect();
-                sorted.sort_by(|a, b| b.1.cmp(&a.1));
+                sorted.sort_by_key(|b| std::cmp::Reverse(b.1));
                 sorted
             };
             if !proc_counts.is_empty() {
