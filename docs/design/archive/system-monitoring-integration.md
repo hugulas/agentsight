@@ -213,7 +213,7 @@ This replaces the previous bash monitoring scripts with:
 
 ```bash
 # Start recording
-sudo ./agentsight record -c claude --output agent_metrics.log
+sudo ./agentsight record -c claude --db agent_metrics.db
 
 # In another terminal, use the agent
 # ... agent performs tasks ...

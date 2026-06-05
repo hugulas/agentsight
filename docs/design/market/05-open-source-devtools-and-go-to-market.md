@@ -7,7 +7,7 @@
 AgentSight 的核心市场机会不是“给所有开发者装一个轻量插件”。eBPF/root/Linux 会天然排除大量 macOS/Windows、本地无管理员权限、容器受限、企业安全策略锁死的开发者环境。更现实的定位是：
 
 - 第一性价值：为 agent 运行提供独立证据，回答“它实际对系统做了什么”，而不是替代 LangSmith、OpenTelemetry、IDE 插件或 agent SDK。
-- 第一产品入口：本地 Linux CLI 是底层入口，`agentsight run -- <agent>` 生成 run receipt/report；第一 GTM 入口应同时提供 GitHub Action/CI 模板，把报告贴到 PR 或 artifact 中，降低非 Linux 用户的感知门槛。
+- 第一产品入口：本地 Linux CLI 是底层入口，`agentsight top` 提供实时视图，`agentsight record -- <agent>` 生成 run receipt/report；第一 GTM 入口应同时提供 GitHub Action/CI 模板，把报告贴到 PR 或 artifact 中，降低非 Linux 用户的感知门槛。
 - Docker 只能作为 demo/packaging 方式，不应作为主入口。Docker 默认 seccomp 会阻止 `bpf`、`perf_event_open` 等 syscall，真正可用仍要 `--privileged`、host PID/cgroup namespace、host mounts。
 - 企业 agent runner 是 90 天后的验证方向，不是 0-30 天入口。它有商业价值，但销售周期、权限审批和部署面太重，早期会拖慢验证。
 - 开源展示价值的最好方式不是大而全 UI，而是可复现 demo、静态 report、PR badge、benchmark、策略模板和短 case study。用户要先看到“没有 AgentSight 我无法证明这件事”。
@@ -95,7 +95,7 @@ Docker 应该用于：
 
 ```bash
 agentsight doctor
-sudo agentsight run -- claude
+sudo agentsight record -- claude
 agentsight report --format html
 ```
 
@@ -204,7 +204,7 @@ AgentSight 的展示物应该围绕“可复现证据”，而不是围绕“漂
 | --- | --- | --- |
 | `agentsight doctor` | eBPF/kernel/capability 错误会非常常见；必须提前解释 | 用户遇到 “Operation not permitted” 后直接流失 |
 | 明确 platform matrix | Linux 发行版、kernel、BTF、Docker、GitHub runner、WSL2 都要写清楚 | 错误期待会伤害信任 |
-| `agentsight run -- <cmd>` | 最小可用产品，直接对应 run receipt | 没有单命令入口，demo 无法传播 |
+| `agentsight record -- <cmd>` | 最小可用产品，直接对应 run receipt | 没有清晰录制入口，demo 无法传播 |
 | targeted tracing | 只追踪指定 agent 进程/子进程，避免全机采集 | root 工具采太多会引发隐私和安全反感 |
 | 静态 report | 消费者不应被要求安装 AgentSight | 开源 reviewer、PR reviewer 无法使用 |
 | `agentsight verify --policy <file>` | 从“看 trace”变成“判定是否符合预期” | 用户需要自己解释 raw events，价值不稳定 |
@@ -239,7 +239,7 @@ AgentSight 的展示物应该围绕“可复现证据”，而不是围绕“漂
 交付：
 
 - `agentsight doctor`：检查 kernel、BTF、capabilities、Docker/seccomp、GitHub runner、debugfs/tracefs、lockdown 迹象。
-- `agentsight run -- <cmd>`：追踪指定命令和子进程。
+- `agentsight record -- <cmd>`：追踪指定命令和子进程。
 - 最小事件集：exec/process tree、file read/write/create/delete/rename、network connect、working directory、exit status。
 - 静态 report：HTML + Markdown + JSON。
 - 三个 demo fixture：benign、suspicious、tool acceptance。
@@ -359,7 +359,7 @@ README 第一屏应展示：
 1. 一条命令：
 
    ```bash
-   sudo agentsight run -- claude
+   sudo agentsight record -- claude
    ```
 
 2. 一张报告截图或链接。

@@ -91,19 +91,19 @@ Build requirements and source build commands live in [docs/build.md](https://git
 
 ### Querying Past Sessions
 
-Every `stat -- <command>` or `record` session is automatically saved to SQLite. Start with the perf-style commands, then use `agentsight db` for structured queries:
+Every `stat -- <command>` or `record` session is automatically saved to SQLite. Start with the perf-style commands, then use `agentsight report` for structured queries:
 
 ```bash
-agentsight stat                       # counters for the latest saved session
-sudo agentsight top                   # live ranked view of current agent sessions
-agentsight top --db run.db --once     # ranked view of a saved session
-sudo agentsight record -- claude      # record a command
-agentsight report                     # high-level run summary
-agentsight list                       # all recorded sessions
-agentsight prompts --json             # full LLM request/response JSON
-agentsight db token                   # token usage (auto-finds latest session)
-agentsight db audit --json            # process spawns, file opens, API calls
-agentsight db export -o snapshot.json # export for web dashboard
+agentsight stat                              # counters for the latest saved session
+sudo agentsight top                          # live ranked view of current agent sessions
+agentsight top --db run.db --once            # ranked view of a saved session
+sudo agentsight record -- claude             # record a command
+agentsight report                            # high-level run summary (default)
+agentsight report list                       # all recorded sessions
+agentsight report prompts --json             # full LLM request/response JSON
+agentsight report token                      # token usage (auto-finds latest session)
+agentsight report audit --json               # process spawns, file opens, API calls
+agentsight report export -o snapshot.json    # export for web dashboard
 ```
 
 ### Web Interface
@@ -173,7 +173,7 @@ A: eBPF probes need root privileges, so AgentSight may prompt for `sudo`. With `
 A: Our evaluation reports less than 3% CPU overhead for typical traced agent workloads.
 
 **Q: Where does captured data go?**
-A: `record` and `stat -- <command>` store sessions locally in SQLite by default. Use `agentsight stat`, `agentsight top`, `agentsight report`, `agentsight list`, `agentsight db audit --json`, and `agentsight db token` to inspect prior runs. Captured data can include prompts, responses, paths, headers, and network targets, so treat logs and DBs as sensitive.
+A: `record` and `stat -- <command>` store sessions locally in SQLite by default. Use `agentsight stat`, `agentsight top`, `agentsight report`, `agentsight report list`, `agentsight report audit --json`, and `agentsight report token` to inspect prior runs. Captured data can include prompts, responses, paths, headers, and network targets, so treat logs and DBs as sensitive.
 
 **Q: Why doesn't AgentSight capture traffic from Claude Code, Node.js, or Gemini CLI?**
 A: These applications statically link their SSL library (BoringSSL for Claude/Bun, OpenSSL for **all** Node.js — both NVM and system installs) into their own binary instead of using system `libssl.so`, so there's nothing for sslsniff to hook by default. AgentSight handles this for you: `record -- <command>` always discovers the binary, and `record -c node` now auto-discovers the Node binary too. For Claude attach mode, pass `--binary-path`. See the "Zero-Config: record" and "Monitoring Node.js AI Tools" sections.

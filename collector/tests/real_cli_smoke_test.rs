@@ -324,7 +324,6 @@ fn real_openclaw_provider_smoke_captures_http_tokens() {
     std::thread::sleep(Duration::from_secs(8));
     let temp = tempfile::tempdir().expect("tempdir");
     let db = temp.path().join("openclaw.db");
-    let log = temp.path().join("openclaw.log");
     let path = std::env::var("PATH").unwrap_or_default();
     let home = std::env::var("HOME").unwrap_or_default();
     let mut trace = Command::new("sudo")
@@ -333,6 +332,7 @@ fn real_openclaw_provider_smoke_captures_http_tokens() {
         .arg(format!("HOME={}", home))
         .arg(env!("CARGO_BIN_EXE_agentsight"))
         .args([
+            "debug",
             "trace",
             "-q",
             "-c",
@@ -341,11 +341,9 @@ fn real_openclaw_provider_smoke_captures_http_tokens() {
             &format!("docker://{}", container),
             "--db",
             db.to_str().expect("db path"),
-            "-o",
-            log.to_str().expect("log path"),
         ])
         .spawn()
-        .expect("agentsight trace should spawn");
+        .expect("agentsight debug trace should spawn");
     let trace_pid = trace.id();
 
     std::thread::sleep(Duration::from_secs(6));
@@ -379,6 +377,6 @@ fn real_openclaw_provider_smoke_captures_http_tokens() {
         .output();
 
     assert_agentsight_success(trigger, "trigger OpenClaw inference");
-    assert!(trace_status.success(), "agentsight trace failed");
+    assert!(trace_status.success(), "agentsight debug trace failed");
     assert!(stat_total_tokens(&db) > 0);
 }

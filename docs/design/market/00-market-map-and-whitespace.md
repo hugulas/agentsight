@@ -462,8 +462,8 @@ This could matter for:
 Potential product:
 
 ```bash
-agentsight run --label old -- ./task.sh
-agentsight run --label new -- ./task.sh
+agentsight record --label old -- ./task.sh
+agentsight record --label new -- ./task.sh
 agentsight diff old new
 ```
 

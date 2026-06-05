@@ -42,7 +42,7 @@ What `record -- <command>` does automatically:
 > not a different one on root's `$PATH`.
 
 Useful flags: `--binary-path <path>` to override auto-discovery, `--no-server`
-to disable the web UI, `--server-port <port>`, `-o <log-file>`.
+to disable the web UI, and `--server-port <port>`.
 
 ## Claude Code
 
@@ -122,7 +122,7 @@ process tree and attaches sslsniff to the right binary automatically:
 # OpenClaw is a Node.js agent that runs in a container — works out of the box
 sudo ./agentsight record -c node --binary-path docker://openclaw
 
-# Accepts a container name or ID; supported by record / trace / ssl
+# Accepts a container name or ID; supported by record, debug trace, and debug ssl
 sudo ./agentsight debug trace --binary-path docker://openclaw --server
 ```
 

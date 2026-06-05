@@ -47,7 +47,7 @@ Potential product command:
 
 ```bash
 agentsight policy suggest --from last-20-runs
-agentsight run --policy suggested.yaml -- claude
+agentsight record --policy suggested.yaml -- claude
 ```
 
 ### 2. Destructive File Operations And Failed Recovery
@@ -78,7 +78,7 @@ Potential product command:
 
 ```bash
 agentsight report --recovery --since "last agent run"
-agentsight export --evidence recovery.json
+agentsight db export -o recovery.json
 ```
 
 ### 3. Token/Cost Runaway And Agent Loops
@@ -342,7 +342,7 @@ Codex, Gemini CLI, Cursor terminal workflows, CI, and scripts.
 Useful commands:
 
 ```bash
-agentsight run --label fix-bug -- claude
+agentsight record --label fix-bug -- claude
 agentsight report --json --label fix-bug
 agentsight query --json "what changed outside the repo?"
 agentsight diff --json baseline current
@@ -423,7 +423,7 @@ Recommended product layers:
 1. **Capture**
 
    ```bash
-   agentsight run -- <agent command>
+   agentsight record -- <agent command>
    ```
 
 2. **Receipt**
@@ -449,7 +449,7 @@ Recommended product layers:
 
    ```bash
    agentsight policy suggest
-   agentsight run --policy policy.yaml -- <agent command>
+   agentsight record --policy policy.yaml -- <agent command>
    ```
 
 6. **Verification**

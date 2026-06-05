@@ -73,7 +73,7 @@ eBPF Programs (kernel) → JSON stdout → Rust Runners → Analyzer Chain → O
   - `analyzers/` — Pluggable stream processors: SSEProcessor, HTTPParser, SSLFilter, HTTPFilter, AuthHeaderRemover, TimestampNormalizer, OtelExporter (maps LLM HTTP pairs to OpenTelemetry `gen_ai.*` spans, exported via OTLP/HTTP JSON; enabled by `debug trace --otel`, see `docs/otel.md`)
   - `core/events.rs` — Standardized `Event` struct with JSON payloads
   - `binary_extractor.rs` — Extracts embedded eBPF binaries to temp files at runtime
-- **`collector/src/main.rs`** — CLI entry point. Main subcommands: `stat`, `top`, `record`, `report`, `prompts`, `list`, `db`, and `debug` (`ssl`, `process`, `stdio`, `trace`, `system`).
+- **`collector/src/main.rs`** — CLI entry point. Main subcommands: `stat`, `top`, `record`, `report` (`summary`, `token`, `audit`, `prompts`, `export`, `list`), `discover`, and `debug` (`ssl`, `process`, `stdio`, `trace`, `system`).
 - **`collector/src/server/`** — Hyper-based embedded web server serving frontend assets and `/api/events`
 - **`frontend/`** — Next.js/React/TypeScript visualization with timeline, process tree, and log views
 
@@ -124,7 +124,7 @@ This logic is in `build_trace_agent()` in `collector/src/cmd_trace.rs`.
 - **`top`** — Primary live view. Run as `sudo ./agentsight top`; it loads eBPF probes and also reads agent-native sessions when present.
 - **`record`** — Optimized recording. Use `sudo ./agentsight record -- <command>` to launch and trace a command, or `sudo ./agentsight record -c <comm>` / `-p <pid>` to attach. It enables SSL, process, stdio when applicable, system monitoring, materialized view sinks, and the web UI by default.
 - **`stat`** — Query the latest saved session, or run `sudo ./agentsight stat -- <command>` and print counters when the command exits.
-- **`report` / `prompts` / `list` / `db`** — Query saved local SQLite sessions; these usually do not need sudo.
+- **`report [summary|token|audit|prompts|export|list]`** — Query saved local SQLite sessions; these usually do not need sudo. `report` with no subcommand defaults to `summary`.
 - **`debug trace`** — Most flexible live capture. Toggle `--ssl`, `--process`, `--stdio`, `--system`, and `--server` independently. Supports `--ssl-filter`, `--http-filter`, `--binary-path`, and `--otel`.
 - **`debug ssl` / `debug process` / `debug stdio` / `debug system`** — Raw component-level debug entrypoints. Use `sudo` because they load eBPF probes or inspect privileged process state.
 

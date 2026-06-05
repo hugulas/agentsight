@@ -177,7 +177,7 @@ async fn setup_signal_handler(suppress_terminal_output: bool) {
                sudo agentsight record -- claude\n\
                sudo agentsight top\n\
                agentsight report\n\
-               agentsight prompts --json\n\n\
+               agentsight report prompts --json\n\n\
              eBPF probes require root. Use sudo for live capture commands;\n\
              AgentSight can auto-elevate if you forget, while your agent still\n\
              runs as your normal user."
@@ -272,45 +272,31 @@ enum Commands {
         #[arg(last = true)]
         command: Vec<String>,
     },
-    /// Show a report for the latest recorded session
-    Report {
-        /// SQLite database path (defaults to latest session)
-        #[arg(long)]
-        db: Option<String>,
-        /// Read agent-native Claude/Codex sessions
-        #[arg(long)]
-        local: bool,
-    },
-    /// Show captured LLM prompts and responses when observable
-    Prompts {
-        /// SQLite database path (defaults to latest session)
-        #[arg(long)]
-        db: Option<String>,
-        /// Maximum rows
-        #[arg(long, default_value = "20")]
-        limit: usize,
-        /// Emit full request/response JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// List recorded session databases
-    List,
     /// Discover supported local agent CLIs and recommended capture settings
     Discover {
         /// Emit JSON output
         #[arg(long)]
         json: bool,
     },
-    /// Database operations: query tokens, audit events, import/export
-    #[command(subcommand)]
-    Db(DbCommands),
+    /// Query and report on recorded sessions: summary, tokens, audit, prompts, export, list.
+    /// Defaults to summary when no subcommand is given.
+    Report {
+        /// SQLite database path (defaults to latest session)
+        #[arg(long)]
+        db: Option<String>,
+        /// Read agent-native Claude/Codex sessions (for summary)
+        #[arg(long)]
+        local: bool,
+        #[command(subcommand)]
+        sub: Option<ReportCommands>,
+    },
     /// Low-level debugging tools: print raw streams and optionally serve a live view
     #[command(subcommand)]
     Debug(DebugCommands),
 }
 
 #[derive(Subcommand)]
-enum DbCommands {
+enum ReportCommands {
     /// Session summary: what the agent did, tokens, processes, files
     Summary {
         /// SQLite database path (defaults to latest session)
@@ -593,55 +579,61 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     setup_signal_handler(suppress_terminal_output).await;
 
     match &cli.command {
-        Commands::Db(cmd) => {
-            match cmd {
-                DbCommands::Summary { db, local } => {
-                    let resolved = if *local {
-                        None
-                    } else {
-                        resolve_db_or_latest(db).ok()
-                    };
-                    run_db_summary(resolved.as_deref())?;
-                }
-                DbCommands::Token { db, group_by, json } => {
-                    let db = resolve_db_or_latest(db)?;
-                    run_token_query(&db, group_by, *json)?;
-                }
-                DbCommands::Audit {
-                    db,
-                    audit_type,
-                    limit,
-                    json,
-                } => {
-                    if let Ok(db) = resolve_db_or_latest(db) {
-                        run_audit_query(&db, audit_type.as_deref(), *limit, *json)?;
-                    } else {
-                        cli_db::run_agent_native_audit(*json)?;
-                    }
-                }
-                DbCommands::Prompts { db, limit, json } => {
-                    let db = resolve_db_or_latest(db)?;
-                    run_prompts_query(&db, *limit, *json)?;
-                }
-                DbCommands::Export {
-                    db,
-                    output,
-                    audit_limit,
-                } => {
-                    let db = resolve_db_or_latest(db)?;
-                    run_export(&db, output, *audit_limit)?;
-                }
-                DbCommands::List => run_db_list()?,
+        Commands::Report { db, local, sub } => match sub {
+            None | Some(ReportCommands::Summary { .. }) => {
+                let (db_ref, local_ref) = match sub {
+                    Some(ReportCommands::Summary { db: d, local: l }) => (d, l),
+                    _ => (db, local),
+                };
+                let resolved = if *local_ref {
+                    None
+                } else {
+                    resolve_db_or_latest(db_ref).ok()
+                };
+                run_db_summary(resolved.as_deref())?;
             }
-        }
-        Commands::Report { db, local } => {
-            let resolved = if *local {
-                None
-            } else {
-                resolve_db_or_latest(db).ok()
-            };
-            run_db_summary(resolved.as_deref())?;
-        }
+            Some(ReportCommands::Token {
+                db: d,
+                group_by,
+                json,
+            }) => {
+                let effective = d.as_ref().or(db.as_ref()).cloned();
+                let db = resolve_db_or_latest(&effective)?;
+                run_token_query(&db, group_by, *json)?;
+            }
+            Some(ReportCommands::Audit {
+                db: d,
+                audit_type,
+                limit,
+                json,
+            }) => {
+                let effective = d.as_ref().or(db.as_ref()).cloned();
+                if let Ok(db) = resolve_db_or_latest(&effective) {
+                    run_audit_query(&db, audit_type.as_deref(), *limit, *json)?;
+                } else {
+                    cli_db::run_agent_native_audit(*json)?;
+                }
+            }
+            Some(ReportCommands::Prompts {
+                db: d,
+                limit,
+                json,
+            }) => {
+                let effective = d.as_ref().or(db.as_ref()).cloned();
+                let db = resolve_db_or_latest(&effective)?;
+                run_prompts_query(&db, *limit, *json)?;
+            }
+            Some(ReportCommands::Export {
+                db: d,
+                output,
+                audit_limit,
+            }) => {
+                let effective = d.as_ref().or(db.as_ref()).cloned();
+                let db = resolve_db_or_latest(&effective)?;
+                run_export(&db, output, *audit_limit)?;
+            }
+            Some(ReportCommands::List) => run_db_list()?,
+        },
         Commands::Stat {
             db, json, command, ..
         } if command.is_empty() => {
@@ -668,13 +660,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 view: view.clone(),
             };
             run_top_query(db, *interval, *limit, count, &options)?;
-        }
-        Commands::Prompts { db, limit, json } => {
-            let db = resolve_db_or_latest(db)?;
-            run_prompts_query(&db, *limit, *json)?;
-        }
-        Commands::List => {
-            run_db_list()?;
         }
         Commands::Discover { json } => {
             run_discover(*json)?;

@@ -26,6 +26,13 @@ This document defines the desired command line and report experience. It complem
 - `agent-workspace-map.md`: workspace/file behavior visualizations.
 - `why.md`: why boundary tracing/eBPF is needed.
 
+Current CLI note: the user-facing entrypoint is `agentsight top` for live
+session monitoring. Use `agentsight record -- <command>` to save a run and
+`agentsight report` / `agentsight stat` to inspect saved runs. Low-level tracing
+is currently exposed as `agentsight debug trace`; top-level `script`, `trace`,
+and `export` commands below are future UX proposals unless explicitly marked as
+current.
+
 ## Product Positioning
 
 AgentSight should borrow the interaction grammar of familiar systems tools:
@@ -36,8 +43,8 @@ AgentSight should borrow the interaction grammar of familiar systems tools:
 | `perf top` / `top` | live ranked activity | `agentsight top` |
 | `perf record` | capture a session artifact | `agentsight record -- <agent>` |
 | `perf report` | inspect a saved artifact | `agentsight report` |
-| `perf script` | dump ordered events | `agentsight script` |
-| `strace -f -tt -e ...` | follow subprocesses and filter events | `agentsight trace -f -tt -e process,file,network,llm` |
+| `perf script` | dump ordered events | future: `agentsight script` |
+| `strace -f -tt -e ...` | follow subprocesses and filter events | current: `agentsight debug trace`; future: `agentsight trace` |
 | Nsight Systems | time-correlated lanes and markers | Agent run timeline with LLM/tool/process/file lanes |
 
 AgentSight is not trying to replace SDK trace tools. It should be the local,
@@ -271,27 +278,27 @@ raw event stream printer used for debug/live event output.
 
 ### Top-Level Shape
 
-Preferred top-level command set:
+Current top-level command set:
 
 ```bash
 agentsight stat    [options] [-- command ...]
 agentsight top     [options]
 agentsight record  [options] [-- command ...]
 agentsight report  [options]
-agentsight script  [options]
-agentsight trace   [options]
-agentsight export  [options]
+agentsight prompts [options]
 agentsight list
 agentsight discover
 agentsight db      ...
+agentsight debug   ...
 ```
 
-`debug` commands can remain, but should be explicitly secondary:
+Future shorthand commands can be considered after the current surfaces are
+stable:
 
 ```bash
-agentsight debug ssl
-agentsight debug process
-agentsight debug system
+agentsight script  [options]
+agentsight trace   [options]
+agentsight export  [options]
 ```
 
 ### `agentsight stat`
@@ -424,7 +431,6 @@ agentsight record -- claude "fix the failing API test"
 agentsight record -c claude
 agentsight record -p 1234
 agentsight record --db run.db -- claude
-agentsight record --output run.agentsight -- claude
 ```
 
 Default output:
@@ -498,9 +504,10 @@ Capture notes
   correlation: timestamp + process context
 ```
 
-### `agentsight script`
+### Future: `agentsight script`
 
-Like `perf script`: ordered event stream.
+Like `perf script`: ordered event stream. Current CLI users should query saved
+sessions with `agentsight db audit --json` until this shorthand exists.
 
 Examples:
 
@@ -521,17 +528,18 @@ Example output:
 03.902  npm[1244]    process.exit     code 1
 ```
 
-### `agentsight trace`
+### Current: `agentsight debug trace`; Future: `agentsight trace`
 
-Like `strace`: detailed follow/filter mode.
+Like `strace`: detailed follow/filter mode. The current implemented command is
+`agentsight debug trace`; the shorter top-level `trace` spelling is a future UX
+proposal.
 
 Examples:
 
 ```bash
-agentsight trace -f -tt -e process,file -- claude
-agentsight trace -p 1234 -e file=write,delete,rename
-agentsight trace -c claude -e network,llm
-agentsight trace --summary-only -- claude
+agentsight debug trace -c claude
+agentsight debug trace -p 1234 --process true --ssl false
+agentsight debug trace -c claude --ssl true --process true --server
 ```
 
 Design notes:

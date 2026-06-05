@@ -220,7 +220,7 @@ AgentSight 应避免成为过重平台的方式：
 
 3. 不做完整 SIEM。输出结构化事件、OpenTelemetry/SIEM export、HTML/JSON report，让企业安全栈消费。
 
-4. 不做 agent IDE。保持 CLI-first：`agentsight run -- claude`、`agentsight report`、`agentsight verify -- mcp-server`。
+4. 不做 agent IDE。保持 CLI-first：`agentsight top`、`agentsight record -- claude`、`agentsight report`、`agentsight verify -- mcp-server`。
 
 5. 不先追求全企业 control plane。先服务本地开发机、CI runner、sandbox、coding agent review、MCP 工具验收这几个高痛场景。
 
@@ -333,4 +333,3 @@ AgentSight 应避免成为过重平台的方式：
 18. 你们更看重“证明没有越界”还是“出事后能追责”？
 19. 对 agent 访问客户数据、源代码、凭证、生产系统的审批流程是什么？
 20. 如果 AgentSight 只做本地/CLI agent 证据层，并导出到现有 SIEM/DLP，你们是否认为这是独立预算，还是必须并入现有 endpoint/security platform？
-

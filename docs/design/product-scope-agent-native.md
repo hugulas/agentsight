@@ -22,6 +22,12 @@ AgentSight should not automate the user's task. The user's agent does that.
 
 AgentSight should observe, attribute, explain, and preserve evidence.
 
+Current CLI note: the implemented capture entrypoint is `agentsight record`,
+with `agentsight top` as the default live view and `agentsight report` for saved
+run inspection. Examples below use those command family names; options such as
+`--policy` or `--label` are future product proposals unless they appear in
+`agentsight --help`.
+
 Use this rule when deciding whether to write code:
 
 - If the feature decides what to do in a domain, prefer the agent.
@@ -129,7 +135,7 @@ Product shape:
 
 ```bash
 agentsight policy suggest --from last-20-runs
-agentsight run --policy suggested.yaml -- claude
+agentsight record --policy suggested.yaml -- claude
 ```
 
 This is not just audit. It is a feedback loop that makes agent autonomy more
@@ -174,7 +180,7 @@ AgentSight output:
 Product shape:
 
 ```bash
-agentsight run -- claude
+agentsight record -- claude
 agentsight report
 ```
 
@@ -218,7 +224,7 @@ Product shape:
 
 ```bash
 agentsight report --recovery
-agentsight export --evidence recovery.json
+agentsight db export -o recovery.json
 ```
 
 This makes agent side effects recoverable, not merely auditable.
@@ -310,7 +316,7 @@ Product shape:
 
 ```bash
 agentsight report --incident
-agentsight export --evidence incident.json
+agentsight db export -o incident.json
 ```
 
 This scenario is not about preventing all failures. It is about making failures
@@ -353,7 +359,7 @@ AgentSight output:
 Product shape:
 
 ```bash
-agentsight run -- codex
+agentsight record -- codex
 agentsight report --for-pr
 ```
 
@@ -396,8 +402,8 @@ AgentSight output:
 Product shape:
 
 ```bash
-agentsight run --label old -- ./agent-task.sh
-agentsight run --label new -- ./agent-task.sh
+agentsight record --label old -- ./agent-task.sh
+agentsight record --label new -- ./agent-task.sh
 agentsight diff old new
 ```
 
@@ -440,7 +446,7 @@ Where it could be valuable:
 Product shape:
 
 ```bash
-agentsight run --policy workspace-only -- claude
+agentsight record --policy workspace-only -- claude
 ```
 
 This is a later-stage scenario. It has real value, but only if the policy

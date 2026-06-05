@@ -296,7 +296,7 @@ AgentSight 应避免把自己描述成“LLM observability platform”或“Lang
 
 短期最合理 wedge：
 
-1. `agentsight run -- claude|codex|cursor-agent` 生成本地 run receipt。
+1. `agentsight record -- claude|codex|cursor-agent` 生成本地 run receipt。
 2. 报告首屏回答：commands、process tree、files touched、network destinations、LLM/token/cost summary、unexpected/risky actions。
 3. 支持导出 Markdown/HTML/JSONL/OTel。
 4. 和 ccusage/CodeBurn 的成本能力保持互补：可读取或对齐它们的成本数据，但不以成本看板为核心。
