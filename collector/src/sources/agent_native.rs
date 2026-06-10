@@ -209,13 +209,9 @@ pub(crate) fn observed_session_prompt_rows(audit_rows: &[AuditEventRow]) -> Vec<
             summary: Some(truncate_text(prompt, 160)),
             details: serde_json::json!({
                 "text_content": prompt,
-                "prompt": prompt,
                 "prompt_source": "local",
-                "prompt_sources": ["local"],
-                "path": path.to_string_lossy(),
                 "session_id": view_id(&session),
                 "agent": session.agent,
-                "source": AGENT_NATIVE_SOURCE,
             }),
         });
     }

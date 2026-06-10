@@ -147,15 +147,10 @@ fn llm_call_prompt_rows(rows: &[LlmCallRow]) -> Vec<AuditEventRow> {
             summary: Some(truncate_text(&text, 160)),
             details: json!({
                 "text_content": text,
-                "prompt": text,
                 "prompt_source": "ssl",
-                "prompt_sources": ["ssl"],
-                "source": "ssl",
                 "request": row.request,
                 "provider": row.provider,
-                "host": row.host,
                 "path": row.path,
-                "model": row.model,
             }),
         });
     }
@@ -219,7 +214,6 @@ fn prompt_text_from_details(details: &Value) -> Option<String> {
     details
         .get("text_content")
         .and_then(Value::as_str)
-        .or_else(|| details.get("prompt").and_then(Value::as_str))
         .and_then(clean_prompt_text)
 }
 
@@ -399,9 +393,7 @@ mod tests {
             summary: Some(text.to_string()),
             details: json!({
                 "text_content": text,
-                "prompt": text,
-                "prompt_source": "local",
-                "prompt_sources": ["local"]
+                "prompt_source": "local"
             }),
         }
     }
