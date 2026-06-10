@@ -358,7 +358,7 @@ pub(crate) async fn run_trace(
 
     // Start web server if enabled
     let _server_handle =
-        start_web_server_if_enabled(enable_server, &server_listen, server_port, live_view)
+        start_web_server_if_enabled(enable_server, &server_listen, server_port, live_view, None)
             .await
             .map_err(|e| RunnerError::from(format!("Failed to start server: {}", e)))?;
 
@@ -377,6 +377,7 @@ pub(crate) async fn start_web_server_if_enabled(
     listen: &str,
     port: u16,
     view: SharedMaterializedView,
+    db_path: Option<String>,
 ) -> Result<Option<StartedWebServer>, Box<dyn std::error::Error>> {
     if !enable_server {
         return Ok(None);
@@ -390,8 +391,8 @@ pub(crate) async fn start_web_server_if_enabled(
     let addr = format!("{}:{}", listen, port)
         .parse()
         .map_err(|e| format!("Invalid server address: {}", e))?;
-    let web_server =
-        WebServer::new(view).map_err(|e| format!("Failed to create web server: {}", e))?;
+    let web_server = WebServer::new_with_db_path(view, db_path)
+        .map_err(|e| format!("Failed to create web server: {}", e))?;
 
     let host = if listen == "0.0.0.0" || listen == "::" {
         "127.0.0.1"
@@ -409,6 +410,11 @@ pub(crate) async fn start_web_server_if_enabled(
 
     // Give the server a moment to start
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    if server_handle.is_finished() {
+        return Err(Box::new(std::io::Error::other(
+            "web server exited during startup",
+        )));
+    }
 
     Ok(Some(StartedWebServer {
         url,
@@ -497,7 +503,7 @@ pub(crate) async fn run_debug_runner<R: Runner>(
         live_view.clone(),
     )));
     let _server_handle =
-        start_web_server_if_enabled(enable_server, server_listen, server_port, live_view)
+        start_web_server_if_enabled(enable_server, server_listen, server_port, live_view, None)
             .await
             .map_err(|e| RunnerError::from(format!("Failed to start server: {}", e)))?;
     let mut stream = runner.run().await?;

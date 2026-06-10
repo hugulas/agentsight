@@ -194,7 +194,7 @@ pub(crate) async fn run_exec(
     let mut agent = build_trace_agent_with_view(binary_extractor, &cfg, live_view.clone())?;
 
     let server_handle =
-        start_web_server_if_enabled(enable_server, server_listen, server_port, live_view)
+        start_web_server_if_enabled(enable_server, server_listen, server_port, live_view, None)
             .await
             .map_err(|e| RunnerError::from(format!("Failed to start server: {}", e)))?;
 
