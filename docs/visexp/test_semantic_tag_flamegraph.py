@@ -19,6 +19,11 @@ from evaluate_artifacts import (
     mixing_summary,
     tag_quality,
 )
+from tag_stability_smoke import (
+    annotator_metrics,
+    cross_annotator_metrics,
+    smoke_verdict,
+)
 
 
 class AggregationTests(unittest.TestCase):
@@ -161,6 +166,27 @@ class AggregationTests(unittest.TestCase):
         self.assertEqual(summary["unique_stacks"], 2)
         self.assertEqual(summary["collapsed_observations"], 3)
         self.assertEqual(summary["compression_ratio"], 2.5)
+
+    def test_tag_stability_metrics_report_repeated_run_stability(self) -> None:
+        rows = [
+            {"annotator": "fallback", "fragment_id": "a", "tag": "debug", "valid": True, "generic": False},
+            {"annotator": "fallback", "fragment_id": "a", "tag": "debug", "valid": True, "generic": False},
+            {"annotator": "fallback", "fragment_id": "b", "tag": "work", "valid": True, "generic": True},
+            {"annotator": "fallback", "fragment_id": "b", "tag": "work", "valid": True, "generic": True},
+            {"annotator": "llama", "fragment_id": "a", "tag": "debug", "valid": True, "generic": False},
+            {"annotator": "llama", "fragment_id": "a", "tag": "debug", "valid": True, "generic": False},
+            {"annotator": "llama", "fragment_id": "b", "tag": "model", "valid": True, "generic": False},
+            {"annotator": "llama", "fragment_id": "b", "tag": "model", "valid": True, "generic": False},
+        ]
+
+        metrics = annotator_metrics(rows)
+        cross = cross_annotator_metrics(rows)
+        verdict = smoke_verdict({"annotator_metrics": metrics})
+
+        self.assertEqual(metrics["fallback"]["exact_stable_fragment_share_pct"], 100.0)
+        self.assertEqual(metrics["fallback"]["generic_output_share_pct"], 50.0)
+        self.assertEqual(cross["pairs"][0]["modal_exact_match_pct"], 50.0)
+        self.assertEqual(verdict, "smoke_supported")
 
 
 if __name__ == "__main__":

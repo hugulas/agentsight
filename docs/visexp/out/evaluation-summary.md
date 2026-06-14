@@ -21,10 +21,10 @@ It is an artifact audit, not a substitute for the planned human and paired-agent
 | C4 normalized agent differences | diagnostic | sources={'codex-subagent': 7, 'codex': 6, 'claude': 16, 'claude-subagent': 7} |
 | C5 user utility over trace tree/process logs | unsupported | no human or task benchmark result file is present |
 | C6 exact AgentSight effect stream preserves value | unsupported | current artifact uses agent-native session records |
-| C7 tag stability and adequacy | partial | same_hash_multi_tag_count=0 |
+| C7 tag stability and adequacy | partial | same_hash_multi_tag_count=0 smoke_verdict=smoke_supported fallback_stable_pct=100.0 fallback_generic_pct=8.333 llama_stable_pct=100.0 llama_generic_pct=20.833 fallback_vs_llama_exact_pct=0.0 |
 
 ## Highest-Value Next Runs
 
 1. Run the paired user-task benchmark in `EXPERIMENT_PLAN.md` B3 to test C5.
-2. Run the repeated-model tag stability block in B4 to test C7.
+2. Expand B4 with manual adequacy labels and a larger multi-model tag stability run.
 3. Replace agent-native tool records with exact AgentSight effects in B6 to test C6.

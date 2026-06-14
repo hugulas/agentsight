@@ -247,12 +247,38 @@ def prompt_weight_summary(stacks: Counter[str]) -> dict[str, Any]:
     }
 
 
+def tag_stability_evidence(stability: dict[str, Any] | None) -> str:
+    if not stability:
+        return "tag_stability_smoke=missing"
+    pieces = [f"smoke_verdict={stability.get('smoke_verdict', 'unknown')}"]
+    annotators = stability.get("annotator_metrics", {})
+    if isinstance(annotators, dict):
+        for name, metrics in sorted(annotators.items()):
+            if isinstance(metrics, dict):
+                pieces.append(
+                    f"{name}_stable_pct={metrics.get('exact_stable_fragment_share_pct')}"
+                )
+                pieces.append(
+                    f"{name}_generic_pct={metrics.get('generic_output_share_pct')}"
+                )
+    pairs = stability.get("cross_annotator_metrics", {}).get("pairs", [])
+    if isinstance(pairs, list):
+        for pair in pairs:
+            if isinstance(pair, dict):
+                pieces.append(
+                    f"{pair.get('left')}_vs_{pair.get('right')}_exact_pct="
+                    f"{pair.get('modal_exact_match_pct')}"
+                )
+    return " ".join(pieces)
+
+
 def build_claim_gates(
     aggregation: dict[str, Any],
     compression: dict[str, Any],
     nonsemantic_mixing: dict[str, Any],
     flat_mixing: dict[str, Any],
     quality: dict[str, Any],
+    stability: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     c1_ok = compression["compression_ratio"] > 1 and compression["repeated_stack_count"] > 0
     c2_ok = (
@@ -319,8 +345,11 @@ def build_claim_gates(
         {
             "claim": "C7 tag stability and adequacy",
             "verdict": "partial" if quality["same_hash_multi_tag_count"] == 0 else "unsupported",
-            "oracle": "current artifact checks only same-hash consistency, not rerun/model/human adequacy",
-            "evidence": f"same_hash_multi_tag_count={quality['same_hash_multi_tag_count']}",
+            "oracle": "smoke checks repeated-run syntax/stability; human adequacy remains required",
+            "evidence": (
+                f"same_hash_multi_tag_count={quality['same_hash_multi_tag_count']} "
+                f"{tag_stability_evidence(stability)}"
+            ).strip(),
         },
     ]
 
@@ -404,7 +433,7 @@ def write_summary_md(path: Path, result: dict[str, Any]) -> None:
             "## Highest-Value Next Runs",
             "",
             "1. Run the paired user-task benchmark in `EXPERIMENT_PLAN.md` B3 to test C5.",
-            "2. Run the repeated-model tag stability block in B4 to test C7.",
+            "2. Expand B4 with manual adequacy labels and a larger multi-model tag stability run.",
             "3. Replace agent-native tool records with exact AgentSight effects in B6 to test C6.",
         ]
     )
@@ -434,12 +463,15 @@ def run(out_dir: Path, write_outputs: bool = True) -> dict[str, Any]:
     )
     quality = tag_quality(prompt_rows, sessions, aggregation)
     prompt_weights = prompt_weight_summary(system)
+    stability_path = out_dir / "tag-stability-smoke.json"
+    stability = read_json(stability_path) if stability_path.exists() else None
     gates = build_claim_gates(
         aggregation,
         semantic_compression,
         nonsemantic_mixing,
         flat_mixing,
         quality,
+        stability,
     )
 
     result = {
@@ -464,6 +496,7 @@ def run(out_dir: Path, write_outputs: bool = True) -> dict[str, Any]:
             "prompt_weight_concentration": prompt_weights,
         },
         "tag_quality": quality,
+        "tag_stability_smoke": stability,
         "claim_gates": gates,
     }
 

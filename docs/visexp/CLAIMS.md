@@ -111,7 +111,12 @@ Current partial evidence:
 
 - `evaluate_artifacts.py` checks tag grammar, generic-tag share, entropy, and
   same-prompt-hash conflicts inside the committed artifact.
+- `tag-stability-smoke.json` runs repeated local annotation over hashed
+  session/prompt/LLM fragments. In the current smoke, fallback and llama each
+  have 100% exact repeated-run stability and 0 invalid outputs, but their modal
+  tags do not match each other. That supports syntax/repeatability only, not
+  semantic adequacy.
 
-Status: partial. Current artifacts can detect obvious tag contract and
-same-hash consistency failures, but they do not yet prove rerun stability or
-human adequacy.
+Status: partial. Current artifacts can detect obvious tag contract failures,
+same-hash consistency failures, and small repeated-run instability. They do not
+yet prove larger multi-model stability or human adequacy.

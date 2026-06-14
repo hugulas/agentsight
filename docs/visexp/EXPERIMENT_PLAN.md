@@ -286,4 +286,4 @@ trees do not join to user requests.
 | C4 | `agent-diff.csv` | diagnostic | Normalized observational differences identify where to inspect. |
 | C5 | none yet | unsupported | User utility is planned, not established. |
 | C6 | none yet | unsupported | Exact AgentSight effect integration is planned, not established. |
-| C7 | `evaluation.json` only | partial | Current artifacts check syntax and same-hash conflicts; stability/adequacy remain future work. |
+| C7 | `evaluation.json`, `tag-stability-smoke.json` | partial | Current artifacts check syntax, same-hash conflicts, and repeated-run smoke stability; manual adequacy and larger multi-model runs remain future work. |

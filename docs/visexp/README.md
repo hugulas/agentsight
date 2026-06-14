@@ -65,6 +65,10 @@ word. Invalid model output falls back to the deterministic local tagger.
   multiple session/prompt tags that semantic stacks separate.
 - `out/claim-gates.csv`: machine-readable claim verdicts for current artifacts.
 - `out/evaluation-summary.md`: human-readable artifact audit.
+- `out/tag-stability-smoke.json`: local-only repeated-run tag stability smoke
+  summary over hashed session/prompt/LLM fragments.
+- `out/tag-stability-smoke.csv`: sanitized per-fragment tag outputs.
+- `out/tag-stability-summary.md`: human-readable C7 smoke summary.
 - `out/prompt-tags.csv`: sanitized prompt hashes, previews, and one-word tags.
 - `out/sessions.json`: per-session counts and tag summaries.
 
@@ -85,5 +89,6 @@ the input effect stream.
 ```bash
 python3 -m unittest docs/visexp/test_semantic_tag_flamegraph.py
 python3 docs/visexp/verify_artifacts.py --out docs/visexp/out
+python3 docs/visexp/tag_stability_smoke.py --out docs/visexp/out
 python3 docs/visexp/evaluate_artifacts.py --out docs/visexp/out
 ```
