@@ -1,4 +1,0 @@
-project:agentsight;session:debug;prompt:test;tool:shell;process:cargo;effect:process.exec;target:cargo;status:ok 1
-project:agentsight;session:debug;prompt:test;tool:shell;process:rustc;effect:file.read;target:collector/src/lib.rs;status:ok 1
-project:agentsight;session:debug;prompt:test;tool:shell;process:cargo;effect:network.connect;target:crates.io;status:ok 1
-project:agentsight;session:debug;prompt:test;tool:shell;process:cargo;effect:process.exit;target:cargo;status:success 1

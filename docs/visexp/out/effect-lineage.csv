@@ -1,5 +1,0 @@
-event_id,audit_type,action,effect,target_group,pid,process_id,process_comm,tool_id,session_id,session_tag,prompt_tag,join_method,orphan_reason,joined
-audit-exec-root,process,exec,process.exec,cargo,4242,proc-4242,cargo,tool-fixture-1,session-fixture-1,debug,test,details.tool_call_id,,True
-audit-file-child,file,read,file.read,collector/src/lib.rs,4243,proc-4243,rustc,tool-fixture-1,session-fixture-1,debug,test,pid_family_time_window,,True
-audit-net-root,network,connect,network.connect,crates.io,4242,proc-4242,cargo,tool-fixture-1,session-fixture-1,debug,test,pid_family_time_window,,True
-audit-exit-root,process,exit,process.exit,cargo,4242,proc-4242,cargo,tool-fixture-1,session-fixture-1,debug,test,pid_family_time_window,,True
