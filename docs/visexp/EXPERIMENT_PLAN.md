@@ -31,7 +31,7 @@ trees do not join to user requests.
 | C3 | Semantic stacks add information beyond flat/nonsemantic baselines. | Current real session sample. | Mixed baseline buckets where nonsemantic grouping merges multiple prompt/session tags. | supported by artifact audit |
 | C4 | Codex and Claude behavior differs in normalized stack space. | Observational local history. | Agent-normalized diff with top/subagent cohorts. | diagnostic only |
 | C5 | Users answer repeated/heavy/divergent behavior questions better with semantic flamegraphs than with trace trees or process logs. | Human or task benchmark. | Time, accuracy, recall, false positives, confidence. | pilot packet ready; participant results missing |
-| C6 | Exact AgentSight process/file/network effects preserve the same visualization value. | Integrated AgentSight effect stream. | Same grammar over exact effects, stack stability, richer path/network attribution. | planned |
+| C6 | Exact AgentSight process/file/network effects preserve the same visualization value. | Integrated AgentSight effect stream. | Same grammar over exact effects, stack stability, richer path/network attribution. | fixture checker ready; live exact capture missing |
 | C7 | Tags are stable and adequate. | Small local LLMs and fallback over representative prompts. | Repeated-run stability, human adequacy labels, generic-tag rate, conflict rate. | partially measured |
 
 ## Claim-To-Experiment Map
@@ -43,7 +43,7 @@ trees do not join to user requests.
 | C3 | Baseline buckets mix multiple prompt/session tags that semantic stacks separate. | B2 | Nonsemantic/flat baselines have no mixed buckets or mixed weight is negligible. | Semantic tags are available but do not add measurable grouping value on this workload. |
 | C4 | Normalized cohort diff exists with caveat that samples are unpaired. | B2 | Diff is dominated by unmatched cohorts or missing one agent family. | Use only as inspection diagnostic, not benchmark. |
 | C5 | Users solve realistic analysis tasks faster or more accurately. | B3 | Semantic view does not improve accuracy/time/confidence over baselines. | Semantic flamegraphs are an exploratory view, not proven user-value improvement. |
-| C6 | Exact system-effect input produces comparable or more actionable stacks. | B6 | Exact effects cannot be joined to prompt/session tags or produce unusable stack explosion. | Current design applies to agent-native logs only. |
+| C6 | Exact system-effect input produces comparable or more actionable stacks. | B6 | In-scope exact effects cannot be joined to prompt/session tags or produce unusable stack explosion. | Checker and stack grammar run on a fixture; current real-session artifact still uses agent-native logs. |
 | C7 | Tags are stable enough and semantically adequate. | B4 | Repeated runs disagree heavily or human adequacy is low. | One-word tags are a lossy navigation aid, not a reliable ontology. |
 
 ## System-Under-Test Model
@@ -60,8 +60,9 @@ trees do not join to user requests.
   manifests, and summaries.
 - Workloads: real local Codex and Claude sessions for the AgentSight repository,
   plus future paired tasks.
-- Observability: session/tool/LLM events now; exact AgentSight
-  `tool_call -> shell -> child process -> file/network effect` events planned.
+- Observability: session/tool/LLM events now; fixture-backed checker for exact
+  AgentSight `tool_call -> shell -> child process -> file/network effect`
+  lineage; live exact event input still planned.
 - Assumptions: each tool event belongs to the active user request in its session
   parser; lower-level effects inherit the prompt/session tag through the
   collector join path.
@@ -203,13 +204,14 @@ trees do not join to user requests.
 - Workload: sessions run under AgentSight collection.
 - Compared systems: agent-native effect proxy versus exact AgentSight effect
   stream.
-- Metrics: join coverage, unjoined event rate, stack stability, added
+- Metrics: join coverage, unjoined in-scope event rate, stack stability, added
   path/domain/process specificity, privacy redaction failures.
 - Setup/config: run selected sessions with collector enabled; inherit semantic
   tags by prompt/tool_call ID.
 - Run budget: smoke with 3 sessions; paper run with paired benchmark sessions.
-- Oracle: collector join checker proves each child process/file/network event has
-  a tool_call and prompt ancestry, or reports explicit orphan categories.
+- Oracle: collector join checker proves each in-scope child process/file/network
+  event has a tool_call and prompt ancestry. Any unjoined in-scope event fails
+  the gate and is treated as a collector or join bug.
 - Success criterion: high join coverage and no committed sensitive text.
 - Failure interpretation: scope the prototype to session-native observability.
 - Figure/table target: exact-effect lineage figure and orphan-rate table.
@@ -224,7 +226,8 @@ trees do not join to user requests.
 | R002 | sanity | Verify accounting and redaction. | `verify_artifacts.py --out docs/visexp/out` | 1 run per artifact update | Exit 0. | low | verifier blind spots |
 | R003 | sanity | Audit semantic information gain. | `evaluate_artifacts.py --out docs/visexp/out` | 1 run per artifact update | C3 gate supported or claim narrowed. | low | proxy metric overclaims |
 | R010 | decision | Run tag stability smoke. | B4 smoke, 30 fragments, 3 reruns | 3 repeats | Low same-fragment conflict and invalid rate 0. | medium | raw fragment handling |
-| R020 | decision | Run exact effect smoke. | B6 smoke, 3 sessions | 3 sessions | Join report has acceptable orphan categories. | medium | collector integration |
+| R020a | sanity | Run exact-effect lineage fixture checker. | `effect_lineage_smoke.py --fixture --out docs/visexp/out` | 1 deterministic fixture | 100% fixture join rate and folded exact-effect stacks exist. | low | fixture representativeness |
+| R020 | decision | Run live exact effect smoke. | B6 smoke, 3 sessions | 3 sessions | Join report has zero in-scope orphan events. | medium | collector integration |
 | R025 | sanity | Generate C5 task bundle, answer key, and participant condition packets. | `user_task_benchmark.py --out docs/visexp/out` | 1 deterministic run | Six tasks, answer key, and oracle-free participant packets exist. | low | task validity |
 | R030 | main | Run user utility pilot. | B3 pilot, 4 users | counterbalanced | Detect task/instrument issues. | medium | participant availability |
 | R040 | main | Run paired agent benchmark. | B5, fixed tasks | 3 reps/task/agent | Task success and stack divergence recorded. | high | cost and tool parity |
@@ -237,8 +240,8 @@ trees do not join to user requests.
   noncommitted raw results, with sanitized summaries committed when safe.
 - Required tracker columns: Run ID, Claim, Block, Purpose, Command/config,
   Commit, Machine, Seed/reps, Oracle, Decision gate, Result path, Status.
-- Next rows to add: R020 exact effect smoke, R030 user utility pilot, and R050
-  final user utility run after the pilot.
+- Next rows to add: R020 live exact effect smoke, R030 user utility pilot, and
+  R050 final user utility run after the pilot.
 
 ## Baseline Fairness
 
@@ -286,5 +289,5 @@ trees do not join to user requests.
 | C3 | `evaluation.json`, `semantic-mixing.csv` | supported by current artifact audit | Semantic frames separate prompt/session regions that flat baselines merge. |
 | C4 | `agent-diff.csv` | diagnostic | Normalized observational differences identify where to inspect. |
 | C5 | `user-task-benchmark.json`, `user-task-answer-key.csv`, `user-task-participant-packets.json` | unsupported | The pilot packet is ready, but user utility is not established without participant results. |
-| C6 | none yet | unsupported | Exact AgentSight effect integration is planned, not established. |
+| C6 | `effect-lineage-smoke.json`, `effect-lineage.csv`, `effect-lineage.folded.txt` | unsupported | The lineage checker and exact-effect stack grammar pass on a fixture; live AgentSight exact-effect integration is not established. |
 | C7 | `evaluation.json`, `tag-stability-smoke.json` | partial | Current artifacts check syntax, same-hash conflicts, and repeated-run smoke stability; manual adequacy and larger multi-model runs remain future work. |

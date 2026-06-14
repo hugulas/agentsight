@@ -25,6 +25,7 @@ from tag_stability_smoke import (
     smoke_verdict,
 )
 from user_task_benchmark import parse_variants, participant_packets, stack_frame
+from effect_lineage_smoke import lineage_rows
 
 
 class AggregationTests(unittest.TestCase):
@@ -217,6 +218,134 @@ class AggregationTests(unittest.TestCase):
 
         self.assertEqual(packets[0]["contains_oracle"], False)
         self.assertNotIn("oracle", packets[0])
+
+    def test_effect_lineage_joins_child_process_effects_to_tool(self) -> None:
+        snapshot = {
+            "project": "agentsight",
+            "sessions": [
+                {
+                    "id": "s1",
+                    "agent_type": "codex",
+                    "start_timestamp_ms": 1,
+                    "attributes": {"session_tag": "debug"},
+                }
+            ],
+            "tool_calls": [
+                {
+                    "id": "t1",
+                    "session_id": "s1",
+                    "timestamp_ms": 10,
+                    "tool_name": "shell",
+                    "tool_call_id": "call-1",
+                    "start_timestamp_ms": 10,
+                    "end_timestamp_ms": 100,
+                    "input": {"prompt_tag": "test"},
+                    "related_pid": 10,
+                }
+            ],
+            "process_nodes": [
+                {"id": "p10", "pid": 10, "root_pid": 10, "start_timestamp_ms": 10, "end_timestamp_ms": 100, "comm": "bash"},
+                {"id": "p11", "pid": 11, "ppid": 10, "root_pid": 10, "start_timestamp_ms": 20, "end_timestamp_ms": 80, "comm": "cat"},
+            ],
+            "audit_events": [
+                {
+                    "id": "a1",
+                    "timestamp_ms": 30,
+                    "audit_type": "file",
+                    "pid": 11,
+                    "action": "read",
+                    "target": "docs/visexp",
+                    "status": "ok",
+                    "details": {},
+                }
+            ],
+        }
+
+        rows, orphans, folded = lineage_rows(snapshot)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(orphans, [])
+        self.assertEqual(rows[0]["join_method"], "pid_family_time_window")
+        self.assertEqual(sum(folded.values()), 1)
+
+    def test_effect_lineage_rejects_out_of_window_process_event(self) -> None:
+        snapshot = {
+            "project": "agentsight",
+            "sessions": [{"id": "s1", "attributes": {"session_tag": "debug"}}],
+            "tool_calls": [
+                {
+                    "id": "t1",
+                    "session_id": "s1",
+                    "tool_name": "shell",
+                    "start_timestamp_ms": 10,
+                    "end_timestamp_ms": 100,
+                    "input": {"prompt_tag": "test"},
+                    "related_pid": 10,
+                }
+            ],
+            "process_nodes": [
+                {"id": "p10", "pid": 10, "start_timestamp_ms": 10, "end_timestamp_ms": 100, "comm": "bash"},
+            ],
+            "audit_events": [
+                {
+                    "id": "a1",
+                    "timestamp_ms": 150,
+                    "audit_type": "file",
+                    "pid": 10,
+                    "action": "read",
+                    "target": "docs/visexp",
+                    "status": "ok",
+                }
+            ],
+        }
+
+        rows, orphans, folded = lineage_rows(snapshot)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(orphans), 1)
+        self.assertEqual(rows[0]["orphan_reason"], "missing_process_time_match")
+        self.assertEqual(sum(folded.values()), 0)
+
+    def test_effect_lineage_does_not_cross_pid_reuse(self) -> None:
+        snapshot = {
+            "project": "agentsight",
+            "sessions": [{"id": "s1", "attributes": {"session_tag": "debug"}}],
+            "tool_calls": [
+                {
+                    "id": "t1",
+                    "session_id": "s1",
+                    "tool_name": "shell",
+                    "start_timestamp_ms": 10,
+                    "end_timestamp_ms": 100,
+                    "input": {"prompt_tag": "test"},
+                    "related_pid": 10,
+                }
+            ],
+            "process_nodes": [
+                {"id": "old-root", "pid": 10, "start_timestamp_ms": 10, "end_timestamp_ms": 100, "comm": "bash"},
+                {"id": "new-root", "pid": 10, "start_timestamp_ms": 200, "end_timestamp_ms": 300, "comm": "bash"},
+                {"id": "new-child", "pid": 11, "ppid": 10, "start_timestamp_ms": 220, "end_timestamp_ms": 260, "comm": "cat"},
+            ],
+            "audit_events": [
+                {
+                    "id": "a1",
+                    "timestamp_ms": 230,
+                    "audit_type": "file",
+                    "pid": 11,
+                    "action": "read",
+                    "target": "docs/visexp",
+                    "status": "ok",
+                }
+            ],
+        }
+
+        rows, orphans, folded = lineage_rows(snapshot)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(orphans), 1)
+        self.assertEqual(rows[0]["process_id"], "new-child")
+        self.assertEqual(rows[0]["orphan_reason"], "missing_tool_ancestry")
+        self.assertEqual(sum(folded.values()), 0)
 
 
 if __name__ == "__main__":

@@ -280,6 +280,20 @@ def user_task_evidence(bundle: dict[str, Any] | None) -> str:
     return f"task_bundle={status} task_count={len(tasks)} participant_results=missing"
 
 
+def effect_lineage_evidence(lineage: dict[str, Any] | None) -> str:
+    if not lineage:
+        return "effect_lineage_smoke=missing live_exact_capture=missing"
+    return (
+        f"effect_lineage_smoke={lineage.get('status', 'unknown')} "
+        f"source={lineage.get('source', 'unknown')} "
+        f"effect_events={lineage.get('effect_events')} "
+        f"join_rate_pct={lineage.get('join_rate_pct')} "
+        f"orphans={lineage.get('orphan_effect_events')} "
+        f"orphan_reasons={lineage.get('orphan_reasons', {})} "
+        "live_exact_capture=missing"
+    )
+
+
 def build_claim_gates(
     aggregation: dict[str, Any],
     compression: dict[str, Any],
@@ -288,6 +302,7 @@ def build_claim_gates(
     quality: dict[str, Any],
     stability: dict[str, Any] | None = None,
     user_tasks: dict[str, Any] | None = None,
+    effect_lineage: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     c1_ok = compression["compression_ratio"] > 1 and compression["repeated_stack_count"] > 0
     c2_ok = (
@@ -348,8 +363,8 @@ def build_claim_gates(
         {
             "claim": "C6 exact AgentSight effect stream preserves value",
             "verdict": "unsupported",
-            "oracle": "requires replacement of agent-native tool records with exact process/file/network effects",
-            "evidence": "current artifact uses agent-native session records",
+            "oracle": "requires live AgentSight exact effects from real sessions to pass lineage checker",
+            "evidence": effect_lineage_evidence(effect_lineage),
         },
         {
             "claim": "C7 tag stability and adequacy",
@@ -397,7 +412,7 @@ def write_mixing_csv(path: Path, sections: list[dict[str, Any]]) -> None:
 def write_claim_csv(path: Path, gates: list[dict[str, str]]) -> None:
     fields = ["claim", "verdict", "oracle", "evidence"]
     with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer = csv.DictWriter(handle, fieldnames=fields, lineterminator="\n")
         writer.writeheader()
         writer.writerows(gates)
 
@@ -443,7 +458,7 @@ def write_summary_md(path: Path, result: dict[str, Any]) -> None:
             "",
             "1. Collect and score the B3 user-task pilot responses to test C5.",
             "2. Expand B4 with manual adequacy labels and a larger multi-model tag stability run.",
-            "3. Replace agent-native tool records with exact AgentSight effects in B6 to test C6.",
+            "3. Run the B6 lineage checker on live exact AgentSight effects from real sessions to test C6.",
         ]
     )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -476,6 +491,8 @@ def run(out_dir: Path, write_outputs: bool = True) -> dict[str, Any]:
     stability = read_json(stability_path) if stability_path.exists() else None
     user_tasks_path = out_dir / "user-task-benchmark.json"
     user_tasks = read_json(user_tasks_path) if user_tasks_path.exists() else None
+    effect_lineage_path = out_dir / "effect-lineage-smoke.json"
+    effect_lineage = read_json(effect_lineage_path) if effect_lineage_path.exists() else None
     gates = build_claim_gates(
         aggregation,
         semantic_compression,
@@ -484,6 +501,7 @@ def run(out_dir: Path, write_outputs: bool = True) -> dict[str, Any]:
         quality,
         stability,
         user_tasks,
+        effect_lineage,
     )
 
     result = {
@@ -510,6 +528,7 @@ def run(out_dir: Path, write_outputs: bool = True) -> dict[str, Any]:
         "tag_quality": quality,
         "tag_stability_smoke": stability,
         "user_task_benchmark": user_tasks,
+        "effect_lineage_smoke": effect_lineage,
         "claim_gates": gates,
     }
 

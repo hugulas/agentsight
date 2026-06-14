@@ -65,6 +65,13 @@ word. Invalid model output falls back to the deterministic local tagger.
   multiple session/prompt tags that semantic stacks separate.
 - `out/claim-gates.csv`: machine-readable claim verdicts for current artifacts.
 - `out/evaluation-summary.md`: human-readable artifact audit.
+- `out/effect-lineage-smoke.json`: fixture-backed C6 checker summary for
+  joining process/file/network events to session/tool/prompt ancestry.
+- `out/effect-lineage.csv`: per-event exact-effect lineage rows, including
+  orphan reasons for failed joins.
+- `out/effect-lineage.folded.txt`: exact-effect folded stack output from the
+  lineage checker.
+- `out/effect-lineage-summary.md`: human-readable C6 smoke summary.
 - `out/tag-stability-smoke.json`: local-only repeated-run tag stability smoke
   summary over hashed session/prompt/LLM fragments.
 - `out/tag-stability-smoke.csv`: sanitized per-fragment tag outputs.
@@ -87,15 +94,17 @@ repeated shell/edit/network/tool patterns, how much semantic tags add beyond a
 non-semantic folded baseline, and where Codex and Claude differ on normalized
 behavior diagnostics.
 
-It cannot yet prove precise file/network side effects from session history alone.
-The stack grammar is already ready for AgentSight's tool -> shell -> child
-process -> file/network events; this prototype uses agent-native tool records as
-the input effect stream.
+It cannot yet prove live precise file/network side effects from real sessions.
+`effect_lineage_smoke.py` proves the checker and folded-stack grammar over an
+AgentSight-shaped fixture, where every in-scope system event must inherit a
+session/tool/prompt tag. C6 still requires live AgentSight
+tool -> shell -> child process -> file/network events from real sessions.
 
 ## Test
 
 ```bash
 python3 -m unittest docs/visexp/test_semantic_tag_flamegraph.py
+python3 docs/visexp/effect_lineage_smoke.py --fixture --out docs/visexp/out
 python3 docs/visexp/verify_artifacts.py --out docs/visexp/out
 python3 docs/visexp/tag_stability_smoke.py --out docs/visexp/out
 python3 docs/visexp/user_task_benchmark.py --out docs/visexp/out

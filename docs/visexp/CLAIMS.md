@@ -106,9 +106,23 @@ Needed:
 
 - Replace agent-native tool records with AgentSight's precise
   tool -> shell -> child process -> file/network events.
-- Re-run the same folded stack generation and compare stack stability.
+- Re-run the same folded stack generation and compare stack stability,
+  join coverage, and added target/process specificity.
 
-Status: future integration.
+Current partial setup:
+
+- `effect-lineage-smoke.json` validates the checker over an AgentSight-shaped
+  fixture with process, file, and network events.
+- `effect-lineage.csv` exposes the row-level lineage from event -> process ->
+  tool -> session -> prompt tag.
+- `effect-lineage.folded.txt` proves the exact-effect stack grammar can collapse
+  those joined events.
+- The fixture is not evidence that live exact capture has been run on real
+  sessions.
+
+Status: unsupported as an exact-effect value claim. The checker is ready; C6
+requires live AgentSight exact effects from real sessions to pass the same
+lineage checker.
 
 ### C7: Tags are stable and semantically adequate across models and reruns.
 

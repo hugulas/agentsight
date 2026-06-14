@@ -25,7 +25,9 @@ It extracts:
 
 The current input is agent-native history, not the full AgentSight
 tool -> shell -> child process -> file/network stream. The stack grammar already
-has slots for those lower-level effects.
+has slots for those lower-level effects. `effect_lineage_smoke.py` exercises the
+expected AgentSight materialized-view shape with sessions, tool calls, process
+nodes, and audit events.
 
 ## Semantic Contract
 
@@ -40,6 +42,12 @@ The demo uses `llama.cpp` with `qwen2.5-3b-instruct-q4_k_m.gguf` for the first
 60 tag requests, then fallback for the rest. This keeps the run bounded while
 showing that the local-small-model path works.
 
+The model does not classify file or network events. The model only names the
+session/prompt/LLM context. Exact system events inherit that one-word tag through
+structured lineage: tool call ID where available, otherwise process-instance
+ancestry, child-process family, and timestamp containment. PID-only matches are
+not sufficient because live traces can reuse process IDs.
+
 ## Folded Stacks
 
 The system footprint stack is:
@@ -52,6 +60,12 @@ The token footprint stack is:
 
 ```text
 project;agent;session-tag;prompt-tag;llm-tag;model;tokens
+```
+
+The exact-effect footprint stack used by the C6 checker is:
+
+```text
+project;session-tag;prompt-tag;tool;process;effect;target;status
 ```
 
 These are collapsed before rendering. If the same path occurs 167 times, the
@@ -93,26 +107,41 @@ whether nonsemantic or flat baselines merge multiple prompt/session regions that
 the semantic stack separates, then writes `evaluation.json`,
 `semantic-mixing.csv`, `claim-gates.csv`, and `evaluation-summary.md`.
 
+`effect_lineage_smoke.py` is the exact-effect join checker. On the committed
+fixture it joins every process/file/network event to a process node, tool call,
+session, and prompt tag, then writes `effect-lineage.csv` and
+`effect-lineage.folded.txt`. Failed joins remain visible with an
+`orphan_reason`; the checker does not fall back to out-of-window processes. This
+is checker evidence only; it is not a live AgentSight capture result.
+
 ## What Is New Here
 
 Traditional process tools can tell that `git`, `gh`, `sed`, or `cargo` ran.
 Trace UIs can show tool calls in chronological order. Token dashboards can show
 which model spent the most.
 
-This experiment joins those observations to one-word semantic labels and then
-aggregates across sessions and agents. The useful unit becomes:
+This experiment joins those observations to one-word semantic labels and exact
+lineage, then aggregates across sessions and agents. The useful unit becomes:
 
 ```text
 paper prompt -> gh process behavior, Claude-heavy
 session prompt -> git read behavior, Codex-heavy
+debug prompt -> rustc child-process file reads
 ```
 
 That is not visible from a process list, a span tree, or a token chart alone.
 
 ## Current Limits
 
-The path/domain extraction from shell commands is conservative and lossy. It is
-only a placeholder for AgentSight's precise system-effect stream.
+The path/domain extraction from shell commands is conservative and lossy in the
+agent-native artifact. It is only a placeholder for AgentSight's precise
+system-effect stream.
+
+The exact-effect checker currently runs on a fixture. It proves that the join
+rules and stack grammar are executable, not that live real sessions already have
+complete process/file/network attribution. For in-scope live AgentSight events,
+an unjoined process/file/network effect is a collector or join bug, not an
+acceptable "unknown prompt" category.
 
 The local model is invoked once per uncached tag, so this is a reproducible
 offline experiment, not the production architecture. A production path should use
@@ -141,5 +170,6 @@ The next OSDI-level evaluation should measure:
   trace trees, flat process summaries, token dashboards, and non-semantic folded
   baselines;
 - stability: tag variance across reruns and small models;
-- extensibility: replacing agent-native tool records with exact AgentSight
-  process/file/network effects preserves the same stack grammar.
+- exact-effect lineage: live AgentSight process/file/network effects all join to
+  session/tool/prompt ancestry, preserve the same stack grammar, and add
+  actionable target/process specificity.
