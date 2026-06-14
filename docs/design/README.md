@@ -21,3 +21,12 @@ Current architecture notes:
 - [Materialized View Architecture](materialized-view-architecture.md)
 - [View, Session, And Process Model](view-session-process-model.md)
 - [AgentSight Top as a Session Monitor](session-centric-top.md)
+- [Visualization Design](vis/README.md)
+
+Product and UX audits:
+
+- [Agent System Effect UX Audit](system-effect-user-audit.md)
+
+Research plans:
+
+- [One-Word Semantic Tags Research Plan](papers/agentsight-task-grounded-system-effects-osdi-draft.md)
