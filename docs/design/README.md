@@ -11,6 +11,7 @@ For current user-facing usage, prefer:
 - [docs/build.md](../build.md)
 - [docs/docker.md](../docker.md)
 - [docs/otel.md](../otel.md)
+- [docs/agent-session.md](../agent-session.md)
 
 When a design note conflicts with the current CLI or source code, treat the
 source code and the user-facing docs above as authoritative. Update or archive
