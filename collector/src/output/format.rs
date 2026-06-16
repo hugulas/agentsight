@@ -18,27 +18,6 @@ pub(crate) struct ResourcePeaks {
     pub(crate) samples: usize,
 }
 
-#[derive(Debug, Serialize)]
-pub(crate) struct StatOutput {
-    pub(crate) db: String,
-    pub(crate) duration_s: f64,
-    pub(crate) view_events: i64,
-    pub(crate) llm_calls: i64,
-    pub(crate) input_tokens: i64,
-    pub(crate) output_tokens: i64,
-    pub(crate) total_tokens: i64,
-    pub(crate) process_execs: usize,
-    pub(crate) process_exits: usize,
-    pub(crate) process_exit_success: usize,
-    pub(crate) process_exit_failure: usize,
-    pub(crate) file_events: usize,
-    pub(crate) unique_files: usize,
-    pub(crate) network_hosts: usize,
-    pub(crate) http_errors: usize,
-    pub(crate) tool_calls: i64,
-    pub(crate) resources: ResourcePeaks,
-}
-
 pub(crate) type TopSection = (&'static str, &'static str, Vec<(String, i64)>);
 
 pub(crate) fn sorted_top_counts<T>(counts: BTreeMap<String, T>, limit: usize) -> Vec<(String, T)>
@@ -485,9 +464,25 @@ pub(crate) fn print_record_shutdown() {
     println!("\n✓ Shutdown requested. Stopping target and monitoring.");
 }
 
-pub(crate) fn print_record_session_summary(summary: &SessionSummary) {
+pub(crate) fn print_record_session_summary(db_path: &str, summary: &SessionSummary) {
+    let api_calls: i64 = summary.models.iter().map(|m| m.4).sum();
+    let tokens: i64 = summary.models.iter().map(|m| m.3).sum();
+    let execs: usize = summary.processes.values().sum();
     println!();
-    print_session_summary(summary);
+    println!(
+        "Recorded {} to {}",
+        format_duration_compact(summary.duration_s),
+        db_path
+    );
+    println!(
+        "{} API calls · {} tokens · {} execs · {} files · {} network endpoints",
+        api_calls,
+        format_count(tokens),
+        execs,
+        summary.files.len(),
+        summary.endpoints.len()
+    );
+    println!("Run: agentsight report --db {}", shell_quote(db_path));
 }
 
 pub(crate) fn print_record_target_status_error(error: impl std::fmt::Display) {
@@ -563,40 +558,6 @@ pub(crate) fn print_llm_prompts(rows: &[LlmCallRow]) {
             row.total_tokens,
             prompt_preview(&row.request, 96)
         );
-    }
-}
-
-pub(crate) fn print_stat(stat: &StatOutput) {
-    println!("AgentSight stat");
-    field("db", &stat.db);
-    field("elapsed time", format!("{:.3} s", stat.duration_s));
-    field("view events", stat.view_events);
-    field("LLM calls", stat.llm_calls);
-    field(
-        "tokens",
-        format!(
-            "{} total (in: {}, out: {})",
-            stat.total_tokens, stat.input_tokens, stat.output_tokens
-        ),
-    );
-    field("tool calls", stat.tool_calls);
-    field("process execs", stat.process_execs);
-    field(
-        "process exits",
-        format!(
-            "{} (success: {}, failure: {})",
-            stat.process_exits, stat.process_exit_success, stat.process_exit_failure
-        ),
-    );
-    field(
-        "file events",
-        format!("{} (unique files: {})", stat.file_events, stat.unique_files),
-    );
-    field("network hosts", stat.network_hosts);
-    field("HTTP/LLM errors", stat.http_errors);
-    if stat.resources.samples > 0 {
-        field("max CPU", format!("{:.2}%", stat.resources.max_cpu_percent));
-        field("max RSS", format!("{} MB", stat.resources.max_rss_mb));
     }
 }
 
@@ -856,12 +817,8 @@ pub(crate) fn print_discovery(
                 dir.display()
             );
         }
-        println!("\n  Run `agentsight report` or `agentsight stat` to analyze the latest session.");
+        println!("\n  Run `agentsight report` to analyze the latest session.");
     }
-}
-
-fn field(label: &str, value: impl std::fmt::Display) {
-    println!("  {:<20}{value}", format!("{label}:"));
 }
 
 fn print_count_map(label: &str, counts: &BTreeMap<String, usize>) {
@@ -878,6 +835,17 @@ fn print_count_map(label: &str, counts: &BTreeMap<String, usize>) {
         .collect::<Vec<_>>()
         .join(", ");
     println!("\n{total} {label}: {top}");
+}
+
+fn shell_quote(value: &str) -> String {
+    if value
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '-' | '_' | ':' | '+'))
+    {
+        value.to_string()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
 }
 
 fn print_process_exits(counts: &BTreeMap<String, usize>) {
