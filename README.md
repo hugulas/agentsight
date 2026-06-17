@@ -1,4 +1,4 @@
-# AgentSight: System-wide AI agent tracing and monitoring with eBPF
+# AgentSight: System-wide AI agent profiling and monitoring with eBPF
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/eunomia-bpf/agentsight/actions/workflows/ci.yml/badge.svg)](https://github.com/eunomia-bpf/agentsight/actions/workflows/ci.yml)
@@ -12,7 +12,7 @@ to your machine, and connect those actions back to the prompts, model calls, and
 tool decisions that triggered them.
 
 Run `agentsight` around Claude Code, Codex, Gemini CLI,
-OpenCode, OpenClaw, or any command. AgentSight records a local trace of:
+OpenCode, OpenClaw, or any command. AgentSight records:
 
 - processes and child processes, shell commands, cwd, argv, exit status, and duration
 - files created, written, truncated, renamed, or deleted
@@ -20,7 +20,7 @@ OpenCode, OpenClaw, or any command. AgentSight records a local trace of:
 - prompts, responses, tool intent, and LLM/model/token
 
 No SDK, no proxy, no vendor integration. AgentSight observes with eBPF and TLS traffic tracing, so it works even when the agent is a
-closed-source CLI. **✨ Zero Instrumentation Required**
+closed-source CLI. **✨ Zero SDK Required**
 
 ## Quick Start
 
@@ -34,25 +34,6 @@ sudo agentsight top
   <img src="https://github.com/eunomia-bpf/agentsight/raw/master/docs/top-mode-demo.png" alt="AgentSight top live session view" width="1000">
   <p><em>Live sessions ranked by model, session tokens, health, process family, tool calls, file activity, and network activity</em></p>
 </div>
-
-If you downloaded the binary into the current directory, run `sudo ./agentsight top`.
-`top` loads eBPF probes, discovers local agents, and connects system activity to
-agent behavior in real time. See the [Usage](#usage) section for more examples
-and details.
-
-For long-running local observation without keeping a terminal open, install the
-background monitor as a systemd user service:
-
-```bash
-agentsight monitor install-service
-```
-
-When the monitor service is active, `agentsight top` reads its stored monitor
-windows instead of starting another live probe session.
-The background monitor is intentionally lightweight: it records matched local
-agent sessions plus `/proc` CPU, memory, I/O, and file-target counts. It does
-not capture SSL/API payloads or other eBPF events; use `sudo agentsight top` or
-`sudo agentsight record -- <command>` when you need full live eBPF capture.
 
 ## 🚀 Why AgentSight?
 
