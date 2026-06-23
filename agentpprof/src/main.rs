@@ -33,7 +33,7 @@ struct Cli {
     project_name: Option<String>,
     #[arg(long, value_enum, default_value_t = CliOutputFormat::Pprof)]
     format: CliOutputFormat,
-    #[arg(long, value_enum, default_value_t = CliProfileView::Tasks)]
+    #[arg(long, value_enum, default_value_t = CliProfileView::Tokens)]
     view: CliProfileView,
     #[arg(long, value_enum, default_value_t = TaggerKind::Regex)]
     tagger: TaggerKind,
@@ -98,23 +98,19 @@ impl From<CliOutputFormat> for OutputFormat {
 
 #[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
 enum CliProfileView {
-    Tasks,
-    System,
-    Tools,
     Tokens,
     Files,
     Network,
+    Time,
 }
 
 impl From<CliProfileView> for ProfileView {
     fn from(val: CliProfileView) -> Self {
         match val {
-            CliProfileView::Tasks => ProfileView::Tasks,
-            CliProfileView::System => ProfileView::System,
-            CliProfileView::Tools => ProfileView::Tools,
             CliProfileView::Tokens => ProfileView::Tokens,
             CliProfileView::Files => ProfileView::Files,
             CliProfileView::Network => ProfileView::Network,
+            CliProfileView::Time => ProfileView::Time,
         }
     }
 }
