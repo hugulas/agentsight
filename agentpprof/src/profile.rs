@@ -19,12 +19,10 @@ pub type Counter = BTreeMap<String, u64>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProfileView {
-    Tasks,
-    System,
-    Tools,
     Tokens,
     Files,
     Network,
+    Time,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -174,22 +172,16 @@ pub fn build_profile_projection(
     view: ProfileView,
 ) -> ProfileProjection {
     let stacks = match view {
-        ProfileView::Tasks => build_task_stacks(sessions, project_name),
-        ProfileView::System | ProfileView::Tools => {
-            let (system, _) = build_folded_stacks(sessions, project_name);
-            system
-        }
         ProfileView::Tokens => build_token_profile_stacks(sessions, project_name),
         ProfileView::Files => build_file_stacks(sessions, project_name),
         ProfileView::Network => build_network_stacks(sessions, project_name),
+        ProfileView::Time => build_time_stacks(sessions, project_name),
     };
     let (sample_type, unit) = match view {
-        ProfileView::Tasks => ("events", "count"),
-        ProfileView::System => ("system_events", "count"),
-        ProfileView::Tools => ("tool_events", "count"),
         ProfileView::Tokens => ("tokens", "count"),
         ProfileView::Files => ("file_events", "count"),
         ProfileView::Network => ("network_events", "count"),
+        ProfileView::Time => ("duration", "seconds"),
     };
     ProfileProjection {
         view: format!("{:?}", view).to_ascii_lowercase(),
@@ -199,43 +191,77 @@ pub fn build_profile_projection(
     }
 }
 
-pub fn build_task_stacks(sessions: &[SessionRecord], project_name: &str) -> Counter {
+fn build_time_stacks(sessions: &[SessionRecord], project_name: &str) -> Counter {
     let mut out = Counter::new();
     for session in sessions {
         let agent = safe_frame(&session.source, Some("agent"));
         let session_tag = safe_frame(&session.session_tag, Some("session"));
+
+        // Collect all events with timestamps and detailed frames
+        // (timestamp, prompt_tag, frames)
+        let mut events: Vec<(i64, String, Vec<String>)> = Vec::new();
+
+        for req in &session.user_requests {
+            if let Some(ts) = req.ts_ms {
+                events.push((ts, req.tag.clone(), vec!["kind:prompt".to_string()]));
+            }
+        }
         for event in &session.tools {
-            let req = session.request_by_index(event.request_index);
-            folded_add(
-                &mut out,
-                vec![
-                    safe_frame(project_name, Some("project")),
-                    agent.clone(),
-                    session_tag.clone(),
-                    safe_frame(&req.tag, Some("prompt")),
+            if let Some(ts) = event.ts_ms {
+                let req = session.request_by_index(event.prompt_index);
+                let mut frames = vec![
                     "kind:tool".to_string(),
-                    safe_frame(&format!("tool/{}", event.category), Some("call")),
-                    safe_frame(&event.effect, Some("effect")),
-                    safe_frame(&event.status, Some("status")),
-                ],
-                1,
-            );
+                    safe_frame(&event.tool_name, Some("tool")),
+                ];
+                // For shell commands, add command name and process chain
+                if event.category == "shell" {
+                    if !event.command_name.is_empty() {
+                        frames.push(safe_frame(&event.command_name, Some("cmd")));
+                    }
+                    // Add process chain if available (from agentsight)
+                    for process in &event.process_chain {
+                        frames.push(safe_frame(process, Some("proc")));
+                    }
+                }
+                events.push((ts, req.tag.clone(), frames));
+            }
         }
         for call in &session.llm_calls {
-            let req = session.request_by_index(call.request_index);
-            folded_add(
-                &mut out,
-                vec![
-                    safe_frame(project_name, Some("project")),
-                    agent.clone(),
-                    session_tag.clone(),
-                    safe_frame(&req.tag, Some("prompt")),
-                    "kind:llm".to_string(),
-                    safe_frame(&format!("llm/{}", call.tag), Some("call")),
-                    safe_frame(last_model_segment(&call.model), Some("model")),
-                ],
-                1,
-            );
+            if let Some(ts) = call.ts_ms {
+                let req = session.request_by_index(call.prompt_index);
+                events.push((
+                    ts,
+                    req.tag.clone(),
+                    vec![
+                        "kind:llm".to_string(),
+                        safe_frame(&format!("llm/{}", call.tag), Some("call")),
+                        safe_frame(last_model_segment(&call.model), Some("model")),
+                    ],
+                ));
+            }
+        }
+
+        events.sort_by_key(|(ts, _, _)| *ts);
+
+        // Calculate duration between consecutive events
+        for i in 0..events.len() {
+            let (ts, prompt_tag, detail_frames) = &events[i];
+            let duration_sec = if i + 1 < events.len() {
+                let next_ts = events[i + 1].0;
+                ((next_ts - ts) / 1000).max(1) as u64
+            } else {
+                1 // Last event gets 1 second
+            };
+
+            let mut frames = vec![
+                safe_frame(project_name, Some("project")),
+                agent.clone(),
+                session_tag.clone(),
+                safe_frame(prompt_tag, Some("prompt")),
+            ];
+            frames.extend(detail_frames.clone());
+
+            folded_add(&mut out, frames, duration_sec);
         }
     }
     out
@@ -245,7 +271,7 @@ fn build_token_profile_stacks(sessions: &[SessionRecord], project_name: &str) ->
     let mut out = Counter::new();
     for session in sessions {
         for call in &session.llm_calls {
-            let req = session.request_by_index(call.request_index);
+            let req = session.request_by_index(call.prompt_index);
             for (kind, value) in call.token_components() {
                 folded_add(
                     &mut out,
@@ -273,7 +299,7 @@ fn build_file_stacks(sessions: &[SessionRecord], project_name: &str) -> Counter 
             if event.path_groups.is_empty() {
                 continue;
             }
-            let req = session.request_by_index(event.request_index);
+            let req = session.request_by_index(event.prompt_index);
             for group in &event.path_groups {
                 folded_add(
                     &mut out,
@@ -301,7 +327,7 @@ fn build_network_stacks(sessions: &[SessionRecord], project_name: &str) -> Count
             if event.effect != "network" && event.domains.is_empty() {
                 continue;
             }
-            let req = session.request_by_index(event.request_index);
+            let req = session.request_by_index(event.prompt_index);
             let domains = if event.domains.is_empty() {
                 vec!["unknown".to_string()]
             } else {
@@ -324,67 +350,6 @@ fn build_network_stacks(sessions: &[SessionRecord], project_name: &str) -> Count
         }
     }
     out
-}
-
-pub fn build_folded_stacks(sessions: &[SessionRecord], project_name: &str) -> (Counter, Counter) {
-    let mut system = Counter::new();
-    let mut token = Counter::new();
-    for session in sessions {
-        let agent_frame = safe_frame(&session.source, Some("agent"));
-        let session_frame = safe_frame(&session.session_tag, Some("session"));
-        for event in &session.tools {
-            let req = session.request_by_index(event.request_index);
-            let mut base = vec![
-                safe_frame(project_name, Some("project")),
-                agent_frame.clone(),
-                session_frame.clone(),
-                safe_frame(&req.tag, Some("prompt")),
-                safe_frame(&format!("tool/{}", event.category), Some("call")),
-            ];
-            for process in &event.process_chain {
-                base.push(safe_frame(process, Some("process")));
-            }
-            base.push(safe_frame(&event.effect, Some("effect")));
-            if !event.path_groups.is_empty() {
-                for group in &event.path_groups {
-                    let mut frames = base.clone();
-                    frames.push(safe_frame(group, Some("path")));
-                    frames.push(safe_frame(&event.status, Some("status")));
-                    folded_add(&mut system, frames, 1);
-                }
-            } else if !event.domains.is_empty() {
-                for domain in &event.domains {
-                    let mut frames = base.clone();
-                    frames.push(safe_frame(domain, Some("domain")));
-                    frames.push(safe_frame(&event.status, Some("status")));
-                    folded_add(&mut system, frames, 1);
-                }
-            } else {
-                let mut frames = base;
-                frames.push(safe_frame(&event.status, Some("status")));
-                folded_add(&mut system, frames, 1);
-            }
-        }
-        for call in &session.llm_calls {
-            let req = session.request_by_index(call.request_index);
-            for (kind, value) in call.token_components() {
-                folded_add(
-                    &mut token,
-                    vec![
-                        safe_frame(project_name, Some("project")),
-                        agent_frame.clone(),
-                        session_frame.clone(),
-                        safe_frame(&req.tag, Some("prompt")),
-                        safe_frame(&format!("llm/{}", call.tag), Some("call")),
-                        safe_frame(last_model_segment(&call.model), Some("model")),
-                        safe_frame(kind, Some("kind")),
-                    ],
-                    value,
-                );
-            }
-        }
-    }
-    (system, token)
 }
 
 pub fn folded_add(counter: &mut Counter, frames: Vec<String>, weight: u64) {
@@ -821,7 +786,7 @@ pub fn session_to_json(session: &SessionRecord, include_previews: bool) -> Value
             "preview": if include_previews { req.preview.clone() } else { "redacted".to_string() },
         })).collect::<Vec<_>>(),
         "tool_events": session.tools.iter().map(|event| {
-            let request = session.request_by_index(event.request_index);
+            let request = session.request_by_index(event.prompt_index);
             json!({
                 "ts_ms": event.ts_ms,
                 "prompt_index": request.index,
@@ -842,7 +807,7 @@ pub fn session_to_json(session: &SessionRecord, include_previews: bool) -> Value
             })
         }).collect::<Vec<_>>(),
         "llm_events": session.llm_calls.iter().map(|call| {
-            let request = session.request_by_index(call.request_index);
+            let request = session.request_by_index(call.prompt_index);
             json!({
                 "ts_ms": call.ts_ms,
                 "prompt_index": request.index,
@@ -855,7 +820,7 @@ pub fn session_to_json(session: &SessionRecord, include_previews: bool) -> Value
                 "input_tokens": call.input_tokens,
                 "output_tokens": call.output_tokens,
                 "cache_tokens": call.cache_tokens,
-                "estimated_tokens": call.estimated_tokens,
+                "estimated_tokens": call.total_tokens,
                 "preview": if include_previews { call.preview.clone() } else { "redacted".to_string() },
             })
         }).collect::<Vec<_>>()
@@ -1037,7 +1002,7 @@ mod tests {
     }
 
     #[test]
-    fn folded_stacks_keep_semantic_call_process_effect_order() {
+    fn time_stacks_calculate_duration_between_events() {
         let session = SessionRecord {
             source: "codex".to_string(),
             path: PathBuf::from("session.jsonl"),
@@ -1046,85 +1011,18 @@ mod tests {
             agent_role: "agent".to_string(),
             model: "gpt-5".to_string(),
             title: "fix tests".to_string(),
-            start_ts_ms: Some(1),
+            start_ts_ms: Some(1000),
             user_requests: vec![UserRequest {
                 index: 0,
-                ts_ms: Some(1),
+                ts_ms: Some(1000),
                 text_hash: "h1".to_string(),
                 preview: "fix rust tests".to_string(),
                 tag: "debug".to_string(),
             }],
             tools: vec![ToolEvent {
-                ts_ms: Some(2),
-                request_index: 0,
+                ts_ms: Some(3000),
+                prompt_index: 0,
                 tool_name: "exec_command".to_string(),
-                category: "shell".to_string(),
-                command: "bash -lc 'cargo test'".to_string(),
-                command_name: "cargo".to_string(),
-                effect: "test".to_string(),
-                process_chain: vec!["bash".to_string(), "cargo".to_string()],
-                status: "ok".to_string(),
-                path_groups: vec!["repo".to_string()],
-                domains: Vec::new(),
-                call_id: Some("call-1".to_string()),
-            }],
-            llm_calls: vec![LlmEvent {
-                ts_ms: Some(3),
-                request_index: 0,
-                model: "gpt-5".to_string(),
-                text_hash: "l1".to_string(),
-                preview: "ran tests".to_string(),
-                input_tokens: 11,
-                output_tokens: 7,
-                cache_tokens: 0,
-                estimated_tokens: 0,
-                tag: "summarize".to_string(),
-            }],
-            session_tag: "rustfix".to_string(),
-        };
-        let (system, token) = build_folded_stacks(&[session], "agentsight");
-        assert_eq!(
-            system.get(
-                "project:agentsight;agent:codex;session:rustfix;prompt:debug;call:tool/shell;process:bash;process:cargo;effect:test;path:repo;status:ok"
-            ),
-            Some(&1)
-        );
-        assert_eq!(
-            token.get(
-                "project:agentsight;agent:codex;session:rustfix;prompt:debug;call:llm/summarize;model:gpt-5;kind:input"
-            ),
-            Some(&11)
-        );
-        assert_eq!(
-            token.get(
-                "project:agentsight;agent:codex;session:rustfix;prompt:debug;call:llm/summarize;model:gpt-5;kind:output"
-            ),
-            Some(&7)
-        );
-    }
-
-    #[test]
-    fn task_stacks_group_by_session_then_prompt_before_activity_kind() {
-        let session = SessionRecord {
-            source: "codex".to_string(),
-            path: PathBuf::from("session.jsonl"),
-            session_id: "s1".to_string(),
-            cwd: "/repo".to_string(),
-            agent_role: "agent".to_string(),
-            model: "gpt-5".to_string(),
-            title: "fix bug".to_string(),
-            start_ts_ms: Some(1),
-            user_requests: vec![UserRequest {
-                index: 0,
-                ts_ms: Some(2),
-                text_hash: "h1".to_string(),
-                preview: "debug failure".to_string(),
-                tag: "debug".to_string(),
-            }],
-            tools: vec![ToolEvent {
-                ts_ms: Some(3),
-                request_index: 0,
-                tool_name: "shell".to_string(),
                 category: "shell".to_string(),
                 command: "cargo test".to_string(),
                 command_name: "cargo".to_string(),
@@ -1132,82 +1030,39 @@ mod tests {
                 process_chain: vec!["cargo".to_string()],
                 status: "ok".to_string(),
                 path_groups: vec!["repo".to_string()],
-                domains: vec![],
+                domains: Vec::new(),
                 call_id: Some("call-1".to_string()),
             }],
             llm_calls: vec![LlmEvent {
-                ts_ms: Some(4),
-                request_index: 0,
+                ts_ms: Some(8000),
+                prompt_index: 0,
                 model: "gpt-5".to_string(),
                 text_hash: "l1".to_string(),
                 preview: "ran tests".to_string(),
                 input_tokens: 11,
                 output_tokens: 7,
                 cache_tokens: 0,
-                estimated_tokens: 0,
-                tag: "review".to_string(),
+                total_tokens: 0,
+                tag: "summarize".to_string(),
             }],
             session_tag: "rustfix".to_string(),
         };
-        let stacks = build_task_stacks(&[session], "agentsight");
+        let stacks = build_time_stacks(&[session], "agentsight");
+        // prompt at 1000ms, tool at 3000ms -> 2 seconds
         assert_eq!(
-            stacks.get(
-                "project:agentsight;agent:codex;session:rustfix;prompt:debug;kind:tool;call:tool/shell;effect:test;status:ok"
-            ),
+            stacks.get("project:agentsight;agent:codex;session:rustfix;prompt:debug;kind:prompt"),
+            Some(&2)
+        );
+        // tool at 3000ms, llm at 8000ms -> 5 seconds (with tool name, cmd, and process chain)
+        assert_eq!(
+            stacks.get("project:agentsight;agent:codex;session:rustfix;prompt:debug;kind:tool;tool:exec_command;cmd:cargo;proc:cargo"),
+            Some(&5)
+        );
+        // last event gets 1 second (with llm details)
+        assert_eq!(
+            stacks.get("project:agentsight;agent:codex;session:rustfix;prompt:debug;kind:llm;call:llm/summarize;model:gpt-5"),
             Some(&1)
         );
-        assert_eq!(
-            stacks.get(
-                "project:agentsight;agent:codex;session:rustfix;prompt:debug;kind:llm;call:llm/review;model:gpt-5"
-            ),
-            Some(&1)
-        );
-    }
-
-    #[test]
-    fn system_view_matches_legacy_tools_projection() {
-        let session = SessionRecord {
-            source: "codex".to_string(),
-            path: PathBuf::from("session.jsonl"),
-            session_id: "s1".to_string(),
-            cwd: "/repo".to_string(),
-            agent_role: "agent".to_string(),
-            model: "gpt-5".to_string(),
-            title: "inspect repo".to_string(),
-            start_ts_ms: Some(1),
-            user_requests: vec![UserRequest {
-                index: 0,
-                ts_ms: Some(2),
-                text_hash: "h1".to_string(),
-                preview: "inspect files".to_string(),
-                tag: "inspect".to_string(),
-            }],
-            tools: vec![ToolEvent {
-                ts_ms: Some(3),
-                request_index: 0,
-                tool_name: "shell".to_string(),
-                category: "shell".to_string(),
-                command: "rg TODO".to_string(),
-                command_name: "rg".to_string(),
-                effect: "read".to_string(),
-                process_chain: vec!["rg".to_string()],
-                status: "ok".to_string(),
-                path_groups: vec!["repo".to_string()],
-                domains: vec![],
-                call_id: Some("call-1".to_string()),
-            }],
-            llm_calls: vec![],
-            session_tag: "profile".to_string(),
-        };
-        let system = build_profile_projection(
-            std::slice::from_ref(&session),
-            "agentsight",
-            ProfileView::System,
-        );
-        let tools = build_profile_projection(&[session], "agentsight", ProfileView::Tools);
-        assert_eq!(system.stacks, tools.stacks);
-        assert_eq!(system.sample_type, "system_events");
-        assert_eq!(tools.sample_type, "tool_events");
     }
 
     #[test]
@@ -1239,7 +1094,7 @@ mod tests {
             ],
             tools: vec![ToolEvent {
                 ts_ms: Some(3),
-                request_index: 1,
+                prompt_index: 1,
                 tool_name: "Bash".to_string(),
                 category: "shell".to_string(),
                 command: "cargo test".to_string(),
@@ -1253,14 +1108,14 @@ mod tests {
             }],
             llm_calls: vec![LlmEvent {
                 ts_ms: Some(4),
-                request_index: 0,
+                prompt_index: 0,
                 model: "claude".to_string(),
                 text_hash: "l0".to_string(),
                 preview: "answer".to_string(),
                 input_tokens: 1,
                 output_tokens: 1,
                 cache_tokens: 0,
-                estimated_tokens: 0,
+                total_tokens: 0,
                 tag: "answer".to_string(),
             }],
             session_tag: "review".to_string(),

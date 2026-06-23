@@ -14,15 +14,39 @@ use profile::{
 };
 use session::{SessionRecord, default_claude_root, discover_sessions};
 use tagger::{
-    LlamaTagger, RegexTagger, annotate_sessions, annotate_sessions_regex, default_tag_cache_path,
+    LlamaTagger, RegexTagger, TagDiagnostics, annotate_sessions, annotate_sessions_regex,
+    default_tag_cache_path,
 };
 
 const DEFAULT_LLAMA_URL: &str = "http://127.0.0.1:8080";
+
+const TAGGING_HELP: &str = r#"
+TAGGING WORKFLOW:
+  Flamegraphs require semantic tags to aggregate meaningfully. Without --tag-rule,
+  prompts are marked 'unmatched' and won't aggregate well.
+
+  1. Run with no rules to see diagnostics:
+     agentpprof --project-root . -o out.json --format json --include-previews
+
+  2. Examine unmatched prompts in the JSON output, identify patterns
+
+  3. Add --tag-rule arguments for your project:
+     agentpprof --project-root . -o out.svg \
+       --tag-rule prompt:review='(?i)review|diff|pr' \
+       --tag-rule prompt:debug='(?i)fix|bug|error' \
+       --tag-rule prompt:test='(?i)test|cargo test'
+
+  4. Iterate until coverage is acceptable (diagnostics show matched/unmatched counts)
+
+  --preset enables built-in keyword rules (profile, debug, test, etc.) for quick
+  testing, but these are generic and unlikely to match your project's prompts well.
+"#;
 
 #[derive(Parser)]
 #[command(name = "agentpprof")]
 #[command(version)]
 #[command(about = "pprof-compatible semantic profiler for local AI coding-agent sessions")]
+#[command(after_help = TAGGING_HELP)]
 struct Cli {
     /// Output file. Use .pb.gz for Go pprof, .folded for folded stacks, .svg for an SVG flamegraph, or .json.
     #[arg(short, long)]
@@ -33,14 +57,18 @@ struct Cli {
     project_name: Option<String>,
     #[arg(long, value_enum, default_value_t = CliOutputFormat::Pprof)]
     format: CliOutputFormat,
-    #[arg(long, value_enum, default_value_t = CliProfileView::Tasks)]
+    #[arg(long, value_enum, default_value_t = CliProfileView::Tokens)]
     view: CliProfileView,
     #[arg(long, value_enum, default_value_t = TaggerKind::Regex)]
     tagger: TaggerKind,
     /// Add a deterministic tag rule, for example prompt:review='(?i)review|diff'.
-    /// Rules are tried before built-in regex tag rules and may be repeated.
+    /// Rules are evaluated in order; first match wins.
     #[arg(long = "tag-rule", value_name = "KIND:TAG=REGEX")]
     tag_rules: Vec<String>,
+    /// Enable built-in keyword rules (profile, debug, test, review, etc.).
+    /// These are generic and may not match your project well. For testing only.
+    #[arg(long)]
+    preset: bool,
     #[arg(long)]
     codex_root: Option<PathBuf>,
     #[arg(long)]
@@ -55,9 +83,11 @@ struct Cli {
     prompt_tag: Option<String>,
     #[arg(long)]
     agent: Option<String>,
-    #[arg(long, default_value_t = 160)]
+    /// Maximum session files to scan per source (Claude, Codex). Default: unlimited (0 = no limit).
+    #[arg(long, default_value_t = 0)]
     scan_files: usize,
-    #[arg(long, default_value_t = 36)]
+    /// Maximum sessions to include after filtering by project. Default: unlimited (0 = no limit).
+    #[arg(long, default_value_t = 0)]
     max_sessions: usize,
     #[arg(long, default_value = DEFAULT_LLAMA_URL)]
     llama_url: String,
@@ -73,8 +103,6 @@ struct Cli {
     no_cache: bool,
     #[arg(long)]
     include_previews: bool,
-    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
-    tag_llm_calls: bool,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
@@ -98,23 +126,19 @@ impl From<CliOutputFormat> for OutputFormat {
 
 #[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
 enum CliProfileView {
-    Tasks,
-    System,
-    Tools,
     Tokens,
     Files,
     Network,
+    Time,
 }
 
 impl From<CliProfileView> for ProfileView {
     fn from(val: CliProfileView) -> Self {
         match val {
-            CliProfileView::Tasks => ProfileView::Tasks,
-            CliProfileView::System => ProfileView::System,
-            CliProfileView::Tools => ProfileView::Tools,
             CliProfileView::Tokens => ProfileView::Tokens,
             CliProfileView::Files => ProfileView::Files,
             CliProfileView::Network => ProfileView::Network,
+            CliProfileView::Time => ProfileView::Time,
         }
     }
 }
@@ -170,7 +194,7 @@ fn command_export(args: Cli) -> Result<()> {
             project_root.display()
         );
     }
-    annotate_sessions_with(&mut sessions, &args)?;
+    let diagnostics = annotate_sessions_with(&mut sessions, &args)?;
     filter_sessions_after_tagging(&mut sessions, &args);
     if sessions.is_empty() {
         bail!("sessions were found, but none matched the requested tag filters");
@@ -186,21 +210,64 @@ fn command_export(args: Cli) -> Result<()> {
         args.include_previews,
         &sessions,
     )?;
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&json!({
-            "status": "ok",
-            "output": output,
-            "format": format!("{:?}", format).to_ascii_lowercase(),
-            "view": projection.view,
-            "sample_type": projection.sample_type,
-            "unit": projection.unit,
-            "sessions": sessions.len(),
-            "samples": projection.stacks.values().sum::<u64>(),
-            "unique_stacks": projection.stacks.len(),
-            "warnings": discovery.warnings,
-        }))?
-    );
+
+    let mut result = json!({
+        "status": "ok",
+        "output": output,
+        "format": format!("{:?}", format).to_ascii_lowercase(),
+        "view": projection.view,
+        "sample_type": projection.sample_type,
+        "unit": projection.unit,
+        "sessions": sessions.len(),
+        "samples": projection.stacks.values().sum::<u64>(),
+        "unique_stacks": projection.stacks.len(),
+        "warnings": discovery.warnings,
+    });
+
+    if let Some(diag) = diagnostics {
+        let total = diag.total_sessions + diag.total_prompts + diag.total_llm_calls;
+        let matched = diag.matched_sessions + diag.matched_prompts + diag.matched_llm_calls;
+        result["tagging"] = json!({
+            "sessions": {
+                "total": diag.total_sessions,
+                "matched": diag.matched_sessions,
+                "unmatched": diag.unmatched_sessions,
+            },
+            "prompts": {
+                "total": diag.total_prompts,
+                "matched": diag.matched_prompts,
+                "unmatched": diag.unmatched_prompts,
+            },
+            "llm_calls": {
+                "total": diag.total_llm_calls,
+                "matched": diag.matched_llm_calls,
+                "unmatched": diag.unmatched_llm_calls,
+            },
+            "coverage_pct": if total > 0 {
+                (matched as f64 / total as f64 * 100.0).round()
+            } else {
+                0.0
+            },
+            "tag_counts": diag.tag_counts,
+        });
+        if !diag.unmatched_samples.is_empty() {
+            result["tagging"]["unmatched_samples"] = json!(
+                diag.unmatched_samples
+                    .iter()
+                    .map(|s| json!({
+                        "kind": s.kind,
+                        "preview": s.preview,
+                        "session_id": s.session_id,
+                    }))
+                    .collect::<Vec<_>>()
+            );
+            result["tagging"]["hint"] = json!(
+                "Add --tag-rule arguments to match unmatched items. Example: --tag-rule session:research='(?i)research|paper' or --tag-rule prompt:debug='(?i)fix|bug|error'"
+            );
+        }
+    }
+
+    println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
 }
 
@@ -253,28 +320,31 @@ fn filter_session_by_prompt_tag(session: &mut SessionRecord, tag: &str) {
     session.tools = std::mem::take(&mut session.tools)
         .into_iter()
         .filter_map(|mut event| {
-            let new_ordinal = row_map.get(&event.request_index).copied()?;
-            event.request_index = new_ordinal;
+            let new_ordinal = row_map.get(&event.prompt_index).copied()?;
+            event.prompt_index = new_ordinal;
             Some(event)
         })
         .collect();
     session.llm_calls = std::mem::take(&mut session.llm_calls)
         .into_iter()
         .filter_map(|mut call| {
-            let new_ordinal = row_map.get(&call.request_index).copied()?;
-            call.request_index = new_ordinal;
+            let new_ordinal = row_map.get(&call.prompt_index).copied()?;
+            call.prompt_index = new_ordinal;
             Some(call)
         })
         .collect();
     session.user_requests = selected.into_iter().map(|(_, req)| req).collect();
 }
 
-fn annotate_sessions_with(sessions: &mut [SessionRecord], args: &Cli) -> Result<()> {
+fn annotate_sessions_with(
+    sessions: &mut [SessionRecord],
+    args: &Cli,
+) -> Result<Option<TagDiagnostics>> {
     match args.tagger {
         TaggerKind::Regex => {
-            let tagger = RegexTagger::new(&args.tag_rules)?;
-            annotate_sessions_regex(sessions, &tagger, args.tag_llm_calls);
-            Ok(())
+            let tagger = RegexTagger::new(&args.tag_rules, args.preset)?;
+            let diagnostics = annotate_sessions_regex(sessions, &tagger);
+            Ok(Some(diagnostics))
         }
         TaggerKind::Llm => {
             if !args.tag_rules.is_empty() {
@@ -288,11 +358,11 @@ fn annotate_sessions_with(sessions: &mut [SessionRecord], args: &Cli) -> Result<
                 Duration::from_secs(args.timeout),
                 args.max_uncached_tags,
             );
-            annotate_sessions(sessions, &mut tagger, args.tag_llm_calls)?;
+            annotate_sessions(sessions, &mut tagger)?;
             if !args.no_cache {
                 tagger.save()?;
             }
-            Ok(())
+            Ok(None)
         }
     }
 }
@@ -333,7 +403,7 @@ mod tests {
             tools: vec![
                 ToolEvent {
                     ts_ms: Some(3),
-                    request_index: 0,
+                    prompt_index: 0,
                     tool_name: "Read".to_string(),
                     category: "read".to_string(),
                     command: String::new(),
@@ -347,7 +417,7 @@ mod tests {
                 },
                 ToolEvent {
                     ts_ms: Some(4),
-                    request_index: 1,
+                    prompt_index: 1,
                     tool_name: "Bash".to_string(),
                     category: "shell".to_string(),
                     command: "cargo test".to_string(),
@@ -363,26 +433,26 @@ mod tests {
             llm_calls: vec![
                 LlmEvent {
                     ts_ms: Some(5),
-                    request_index: 0,
+                    prompt_index: 0,
                     model: "claude".to_string(),
                     text_hash: "l0".to_string(),
                     preview: "review answer".to_string(),
                     input_tokens: 1,
                     output_tokens: 1,
                     cache_tokens: 0,
-                    estimated_tokens: 0,
+                    total_tokens: 0,
                     tag: "answer".to_string(),
                 },
                 LlmEvent {
                     ts_ms: Some(6),
-                    request_index: 1,
+                    prompt_index: 1,
                     model: "claude".to_string(),
                     text_hash: "l1".to_string(),
                     preview: "test answer".to_string(),
                     input_tokens: 2,
                     output_tokens: 3,
                     cache_tokens: 0,
-                    estimated_tokens: 0,
+                    total_tokens: 0,
                     tag: "answer".to_string(),
                 },
             ],
@@ -395,10 +465,10 @@ mod tests {
         assert_eq!(session.user_requests[0].text_hash, "h1");
         assert_eq!(session.user_requests[0].index, 0);
         assert_eq!(session.tools.len(), 1);
-        assert_eq!(session.tools[0].request_index, 0);
+        assert_eq!(session.tools[0].prompt_index, 0);
         assert_eq!(session.tools[0].effect, "test");
         assert_eq!(session.llm_calls.len(), 1);
-        assert_eq!(session.llm_calls[0].request_index, 0);
+        assert_eq!(session.llm_calls[0].prompt_index, 0);
         assert_eq!(session.llm_calls[0].text_hash, "l1");
 
         let payload = profile::session_to_json(&session, false);
