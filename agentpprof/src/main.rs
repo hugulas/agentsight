@@ -101,8 +101,6 @@ struct Cli {
     no_cache: bool,
     #[arg(long)]
     include_previews: bool,
-    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
-    tag_llm_calls: bool,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
@@ -337,7 +335,7 @@ fn annotate_sessions_with(sessions: &mut [SessionRecord], args: &Cli) -> Result<
     match args.tagger {
         TaggerKind::Regex => {
             let tagger = RegexTagger::new(&args.tag_rules, args.preset)?;
-            let diagnostics = annotate_sessions_regex(sessions, &tagger, args.tag_llm_calls);
+            let diagnostics = annotate_sessions_regex(sessions, &tagger);
             Ok(Some(diagnostics))
         }
         TaggerKind::Llm => {
@@ -352,7 +350,7 @@ fn annotate_sessions_with(sessions: &mut [SessionRecord], args: &Cli) -> Result<
                 Duration::from_secs(args.timeout),
                 args.max_uncached_tags,
             );
-            annotate_sessions(sessions, &mut tagger, args.tag_llm_calls)?;
+            annotate_sessions(sessions, &mut tagger)?;
             if !args.no_cache {
                 tagger.save()?;
             }

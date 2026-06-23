@@ -1,0 +1,36 @@
+# AgentSight by Eunomia
+
+AgentSight is a system-level profiling and tracing tool for AI agents, powered by eBPF.
+
+Primary website: https://agentsight.us/
+Live demo: https://app.agentsight.us/
+Documentation: https://eunomia.dev/agentsight/
+GitHub: https://github.com/eunomia-bpf/agentsight
+
+## What AgentSight Does
+
+- Profiles AI agent runs across time, tokens, commands, files, network calls, and system resources.
+- Traces Claude Code, Codex, Gemini CLI, OpenCode, OpenClaw, Python agents, Node.js agents, Dockerized agents, and arbitrary local commands.
+- Uses eBPF, process monitoring, and TLS traffic tracing to observe agents from the system boundary.
+- Requires Linux and elevated privileges for live eBPF capture.
+- Stores recorded sessions locally and can serve or export reports from saved data.
+- Exports captured LLM calls as OpenTelemetry GenAI spans.
+- Supports skill-driven analysis workflows where an agent turns saved AgentSight evidence into shareable HTML insight artifacts.
+
+## Positioning
+
+AgentSight is not an SDK-based LLM tracing platform, gateway, or transcript-only token tracker. It complements Langfuse, LangSmith, Phoenix, Helicone, Datadog, New Relic, and vendor-native telemetry by capturing system-level effects that app traces often miss: child processes, shell commands, file access, network destinations, and resource usage.
+
+## Common Use Cases
+
+- Profile slow or expensive AI agent runs.
+- Understand token loops, repeated file scans, and long-running subprocesses.
+- Review AI-generated pull requests with a run profile.
+- Generate single-file HTML insight artifacts from saved traces or monitor databases.
+- Trace closed-source local agent CLIs without vendor hooks.
+- Audit MCP servers, skills, and plugins during real agent use.
+- Investigate risky file, process, and network behavior.
+
+## Short Description
+
+AgentSight by Eunomia profiles AI agents like programs. It traces where time, tokens, commands, files, network calls, and system resources go, without SDKs, proxies, or vendor hooks.

@@ -317,7 +317,6 @@ pub const UNMATCHED_TAG: &str = "unmatched";
 pub fn annotate_sessions_regex(
     sessions: &mut [SessionRecord],
     tagger: &RegexTagger,
-    tag_llm_calls: bool,
 ) -> TagDiagnostics {
     let mut diagnostics = TagDiagnostics::default();
 
@@ -397,7 +396,6 @@ pub fn annotate_sessions_regex(
 pub fn annotate_sessions(
     sessions: &mut [SessionRecord],
     tagger: &mut LlamaTagger,
-    tag_llm_calls: bool,
 ) -> Result<()> {
     for session in sessions {
         let prompt_text = session
@@ -423,26 +421,16 @@ pub fn annotate_sessions(
             )?;
         }
         for idx in 0..session.llm_calls.len() {
-            let prompt_tag = session
-                .user_requests
-                .get(session.llm_calls[idx].request_index)
-                .or_else(|| session.user_requests.last())
-                .map(|req| req.tag.clone())
-                .unwrap_or_else(|| session.session_tag.clone());
-            if tag_llm_calls {
-                let call = &session.llm_calls[idx];
-                session.llm_calls[idx].tag = tagger.tag(
-                    "llm",
-                    &call.preview,
-                    &[
-                        session.session_tag.clone(),
-                        session.source.clone(),
-                        call.model.clone(),
-                    ],
-                ).unwrap_or(prompt_tag);
-            } else {
-                session.llm_calls[idx].tag = prompt_tag;
-            }
+            let call = &session.llm_calls[idx];
+            session.llm_calls[idx].tag = tagger.tag(
+                "llm",
+                &call.preview,
+                &[
+                    session.session_tag.clone(),
+                    session.source.clone(),
+                    call.model.clone(),
+                ],
+            )?;
         }
     }
     Ok(())
