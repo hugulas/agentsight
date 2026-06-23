@@ -1028,11 +1028,11 @@ fn build_token_profile_stacks(sessions: &[SessionRecord], project_name: &str) ->
                     vec![
                         safe_frame(project_name, Some("project")),
                         safe_frame(&session.source, Some("agent")),
-                        safe_frame(last_model_segment(&call.model), Some("model")),
-                        safe_frame(kind, Some("kind")),
                         safe_frame(&session.session_tag, Some("session")),
                         safe_frame(&req.tag, Some("prompt")),
                         safe_frame(&format!("llm/{}", call.tag), Some("call")),
+                        safe_frame(last_model_segment(&call.model), Some("model")),
+                        safe_frame(kind, Some("kind")),
                     ],
                     value,
                 );
