@@ -54,7 +54,7 @@ export default function Home() {
       setSnapshot(await response.json() as AgentSightSnapshot);
       setMode('live');
     } catch {
-      // No backend — load static demo snapshot
+      // No backend, load static demo snapshot.
       try {
         const demo = await fetch(`${basePath}/sample-snapshot.json`);
         if (demo.ok) {

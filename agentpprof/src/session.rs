@@ -327,7 +327,6 @@ fn apply_agent_session_fallbacks(record: &mut SessionRecord, session: &AgentSess
                     path_groups: session
                         .files
                         .keys()
-                        .take(8)
                         .map(|path| path_group(path, Path::new(&record.cwd)))
                         .collect(),
                     domains: Vec::new(),
@@ -512,8 +511,31 @@ fn enrich_codex(
                 }
             }
         }
-        ("response_item", "message") => {
-            // Skip individual messages - use token_count events for accurate token data
+        ("response_item", "message") | ("event_msg", "agent_message") => {
+            // Agent message - create LLM call with content preview
+            let text = payload
+                .get("message")
+                .or_else(|| payload.get("content"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if !text.trim().is_empty() {
+                record.llm_calls.push(LlmEvent {
+                    ts_ms,
+                    request_index: *current_request,
+                    model: if record.model.is_empty() {
+                        "codex".to_string()
+                    } else {
+                        record.model.clone()
+                    },
+                    text_hash: short_hash(text, 12),
+                    preview: truncate_clean(text, 180),
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cache_tokens: 0,
+                    estimated_tokens: 0,
+                    tag: String::new(),
+                });
+            }
         }
         ("event_msg", "token_count") | ("event_msg", "token_usage") => {
             let info = payload.get("info").or_else(|| payload.get("usage")).unwrap_or(payload);
@@ -521,10 +543,24 @@ fn enrich_codex(
             let token_usage = info.get("last_token_usage")
                 .or_else(|| info.get("total_token_usage"))
                 .unwrap_or(info);
+            let input_tokens = json_u64(token_usage, "input_tokens");
+            let output_tokens = json_u64(token_usage, "output_tokens");
+            let cache_tokens = json_u64(token_usage, "cached_input_tokens");
             let total = json_u64(token_usage, "total_tokens")
                 .max(json_u64(info, "total_tokens"))
                 .max(json_u64(info, "tokens"));
             if total > 0 {
+                // Update the most recent LLM call with token data if it has no tokens yet
+                if let Some(last) = record.llm_calls.last_mut() {
+                    if last.estimated_tokens == 0 {
+                        last.input_tokens = input_tokens;
+                        last.output_tokens = output_tokens;
+                        last.cache_tokens = cache_tokens;
+                        last.estimated_tokens = total;
+                        return;
+                    }
+                }
+                // Otherwise create a new LLM call (for token events without preceding agent_message)
                 record.llm_calls.push(LlmEvent {
                     ts_ms,
                     request_index: *current_request,
@@ -534,10 +570,10 @@ fn enrich_codex(
                         record.model.clone()
                     },
                     text_hash: short_hash(&token_usage.to_string(), 12),
-                    preview: "codex token report".to_string(),
-                    input_tokens: json_u64(token_usage, "input_tokens"),
-                    output_tokens: json_u64(token_usage, "output_tokens"),
-                    cache_tokens: json_u64(token_usage, "cached_input_tokens"),
+                    preview: "token report".to_string(),
+                    input_tokens,
+                    output_tokens,
+                    cache_tokens,
                     estimated_tokens: total,
                     tag: String::new(),
                 });
@@ -896,7 +932,6 @@ fn process_chain_from_parts(parts: &[String]) -> Vec<String> {
             }
         }
     }
-    chain.truncate(6);
     chain
 }
 
@@ -949,7 +984,7 @@ fn extract_domains(text: &str) -> Vec<String> {
             }
         }
     }
-    domains.into_iter().take(8).collect()
+    domains.into_iter().collect()
 }
 
 fn extract_path_groups(
@@ -974,7 +1009,7 @@ fn extract_path_groups(
             groups.insert(path_group(&part, project_root));
         }
     }
-    groups.into_iter().filter(|v| v != "none").take(8).collect()
+    groups.into_iter().filter(|v| v != "none").collect()
 }
 
 fn plausible_path_token(part: &str) -> bool {

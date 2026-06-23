@@ -1,6 +1,6 @@
 # AgentSight by Eunomia
 
-AgentSight is a system-level profiling and tracing toolkit for AI agents, built from tools and skills.
+AgentSight is a system-level profiling/tracing toolkit for AI agents, built from tools and skills.
 
 Primary website: https://agentsight.us/
 Live demo: https://app.agentsight.us/
@@ -36,4 +36,4 @@ AgentSight is not an SDK-based LLM tracing platform, gateway, or transcript-only
 
 ## Short Description
 
-Let your agents profile AI agents like programs. AgentSight provides system-level profiling and tracing tools and skills for Claude Code, Codex, and other local agents.
+Let your agents profile AI agents like programs. AgentSight provides system-level profiling/tracing tools and skills for Claude Code, Codex, and other local agents.

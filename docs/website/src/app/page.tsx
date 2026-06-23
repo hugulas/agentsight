@@ -29,7 +29,7 @@ const jsonLd = {
   applicationCategory: 'DeveloperApplication',
   operatingSystem: 'Linux',
   description:
-    'System-level profiling and tracing tools and skills for AI agents, powered by eBPF. Helps agents understand time, tokens, commands, files, network calls, and system resources without SDKs.',
+    'System-level profiling/tracing tools and skills for AI agents, powered by eBPF. Helps agents understand time, tokens, commands, files, network calls, and system resources without SDKs.',
   url: 'https://agentsight.us/',
   codeRepository: 'https://github.com/eunomia-bpf/agentsight',
   offers: {
@@ -59,9 +59,9 @@ export default function Home() {
               Let your agents profile AI agents like programs.
             </h1>
             <p className="mt-6 max-w-3xl text-lg leading-8 text-slate-600">
-              System-level profiling and tracing tools and skills for Claude Code, Codex, and other
+              System-level profiling/tracing tools and skills for Claude Code, Codex, and other
               local agents. Understand where time, tokens, commands, files, network calls, and
-              system resources go — without SDKs.
+              system resources go, without SDKs.
             </p>
             <div className="mt-8">
               <PrimaryCta />
