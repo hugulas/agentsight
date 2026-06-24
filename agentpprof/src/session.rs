@@ -1,5 +1,6 @@
 use agent_session::{AgentSession, SessionCandidate};
 use anyhow::{Result, anyhow};
+use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 
 pub type UserRequest = agent_session::UserPrompt;
@@ -75,28 +76,34 @@ pub fn discover_sessions(
         candidates.truncate(scan_files);
     }
 
-    let mut sessions = Vec::new();
-    for candidate in candidates {
-        let Some(summary) = agent_session::parse_session_file(&candidate) else {
-            continue;
-        };
-        if !explicit_files && !session_matches_project(&summary, project_root) {
-            continue;
-        }
+    // Parse sessions in parallel
+    let project_root_owned = project_root.to_path_buf();
+    let parsed: Vec<_> = candidates
+        .par_iter()
+        .filter_map(|candidate| {
+            let summary = agent_session::parse_session_file(candidate)?;
+            if !explicit_files && !session_matches_project(&summary, &project_root_owned) {
+                return None;
+            }
+            let mut session = record_from_agent_session(&summary);
+            apply_agent_session_fallbacks(&mut session, &summary);
+            session.ensure_prompt();
+            if session.user_requests.is_empty()
+                && session.tools.is_empty()
+                && session.llm_calls.is_empty()
+            {
+                return None;
+            }
+            Some(session)
+        })
+        .collect();
 
-        let mut session = record_from_agent_session(&summary);
-        apply_agent_session_fallbacks(&mut session, &summary);
-        session.ensure_prompt();
-        if !session.user_requests.is_empty()
-            || !session.tools.is_empty()
-            || !session.llm_calls.is_empty()
-        {
-            sessions.push(session);
-        }
-        if max_sessions > 0 && sessions.len() >= max_sessions {
-            break;
-        }
-    }
+    let sessions = if max_sessions > 0 {
+        parsed.into_iter().take(max_sessions).collect()
+    } else {
+        parsed
+    };
+
     Ok(DiscoveryResult {
         sessions,
         warnings: Vec::new(),

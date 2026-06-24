@@ -61,6 +61,11 @@ Rule syntax: `KIND:TAG=REGEX`
 
 **Never use catch-all rules** like `prompt:misc=.` or `llm:other=.` — they defeat the purpose of semantic tagging by lumping everything together. If you can't classify an item, leave it unmatched and add more specific rules.
 
+**Never use placeholder tags** like `llm:placeholder`, `llm:response`, `prompt:other` — they indicate that the tagging rules are incomplete. If you see placeholder tags dominating the distribution, investigate why the content isn't being classified properly. Common causes:
+- Parser limitations (e.g., `"claude response"` preview means the actual response content wasn't extracted)
+- Rules ordered incorrectly (more specific rules should come before general ones)
+- Missing rules for common patterns
+
 ### 4. Check Coverage
 
 Each run shows diagnostics and warnings:
@@ -79,14 +84,27 @@ agentpprof --project-root . -o out.json --format json 2>&1 | jq '.tagging'
   - `sessions.unmatched / sessions.total < 5%`
   - `llm_calls.unmatched / llm_calls.total < 5%`
 
-**Distribution quality:**
-- Ideal: 10-20 distinct tag categories
-- No single tag should dominate (>50% of tagged items)
-- Tags too fragmented (>25 categories) may need merging
+**Distribution quality metrics:**
+- **Tag count**: 10-20 categories ideal (<5 too coarse, >25 too fragmented)
+- **Top-1 share**: <40% (no single tag should dominate)
+- **Top-3 share**: <70% (diversity across categories)
+- **Entropy**: >0.7 normalized (evenly distributed)
 
-The tool will warn if distribution is poor:
+The tool prints detailed distribution analysis:
 ```
-Distribution warning: prompt:review dominates (55.2% of tagged prompts). Consider splitting into sub-categories.
+Distribution (12 prompt tags, 2620 total): top1=35.5%, top3=58.2%, top5=72.1%, entropy=0.78
+  Top tags:
+    1. prompt:review = 931 (35.5%)
+    2. prompt:query = 228 (8.7%)
+    3. prompt:discuss = 173 (6.6%)
+    4. prompt:edit = 156 (6.0%)
+    5. prompt:code = 194 (7.4%)
+```
+
+Warnings are shown if metrics are poor:
+```
+  Warning: prompt:misc dominates (55.2%). Target: top1 < 40%. Split into sub-categories.
+  Warning: low entropy (0.45). Distribution is uneven. Target: entropy > 0.7.
 ```
 
 **Spot-check unmatched samples:**
@@ -184,4 +202,4 @@ agentpprof \
 
 ## Example Script
 
-See `docs/flamegraph-example/bpf-benchmark.sh` for a complete example.
+See `docs/flamegraph-example/agentsight.sh` for a complete example with AgentSight's own development traces.

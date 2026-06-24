@@ -330,16 +330,38 @@ fn parse_jsonl(
                 let text = content_to_text(content);
                 let usage = obj.pointer("/message/usage").unwrap_or(&Value::Null);
                 if !text.trim().is_empty() || usage.is_object() {
+                    // Build preview: prefer text content, fall back to tool names
+                    let preview_text = if !text.trim().is_empty() {
+                        text.clone()
+                    } else if let Some(items) = content.as_array() {
+                        let tool_names: Vec<_> = items
+                            .iter()
+                            .filter_map(|item| {
+                                if item.get("type").and_then(Value::as_str) == Some("tool_use") {
+                                    item.get("name").and_then(Value::as_str)
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        if tool_names.is_empty() {
+                            String::new()
+                        } else {
+                            format!("tool: {}", tool_names.join(", "))
+                        }
+                    } else {
+                        String::new()
+                    };
                     events.llm_responses.push(LlmResponse {
                         ts_ms: ts_ms_from_event(&obj),
                         prompt_index: current_prompt_index,
                         model,
                         text_hash: short_hash(&(text.clone() + &usage.to_string()), 12),
                         preview: truncate_clean(
-                            if text.trim().is_empty() {
-                                "claude response"
+                            if preview_text.is_empty() {
+                                "token report"
                             } else {
-                                &text
+                                &preview_text
                             },
                             140,
                         ),
@@ -1440,6 +1462,14 @@ fn content_to_text(value: &Value) -> String {
                 let typ = item.get("type").and_then(Value::as_str).unwrap_or("");
                 if typ == "tool_result" || typ == "tool_use" || typ == "function_call" {
                     return None;
+                }
+                // For thinking blocks, extract the thinking field
+                if typ == "thinking" {
+                    return item
+                        .get("thinking")
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string);
                 }
                 item.get("text")
                     .or_else(|| item.get("content"))

@@ -450,7 +450,15 @@ pub fn annotate_sessions_regex(
         }
 
         for call in &session.llm_calls {
-            if call.tag != UNMATCHED_TAG {
+            if call.tag == UNMATCHED_TAG {
+                if diagnostics.unmatched_samples.len() < 30 {
+                    diagnostics.unmatched_samples.push(UnmatchedSample {
+                        kind: "llm".to_string(),
+                        preview: truncate_clean(&call.preview, 120),
+                        session_id: session.session_id.clone(),
+                    });
+                }
+            } else {
                 *diagnostics
                     .tag_counts
                     .entry(format!("llm:{}", call.tag))
@@ -495,34 +503,93 @@ pub fn annotate_sessions_regex(
         );
     }
 
-    // Distribution analysis: check if tags are well-distributed
-    let prompt_tags: Vec<_> = diagnostics
-        .tag_counts
-        .iter()
-        .filter(|(k, _)| k.starts_with("prompt:") && !k.ends_with(":unmatched"))
-        .collect();
-    if !prompt_tags.is_empty() {
-        let total_tagged: usize = prompt_tags.iter().map(|(_, v)| *v).sum();
-        let max_tag = prompt_tags.iter().max_by_key(|(_, v)| *v);
-        if let Some((tag, count)) = max_tag {
-            let max_pct = **count as f64 / total_tagged as f64 * 100.0;
-            if max_pct > 50.0 {
-                eprintln!(
-                    "Distribution warning: {} dominates ({:.1}% of tagged prompts). Consider splitting into sub-categories.",
-                    tag, max_pct
-                );
-            }
-        }
-        let num_tags = prompt_tags.len();
-        if num_tags > 25 {
-            eprintln!(
-                "Distribution warning: {} prompt tags may be too fragmented. Consider merging similar categories.",
-                num_tags
-            );
-        }
-    }
+    // Distribution analysis for each category
+    print_distribution_analysis("prompt", &diagnostics.tag_counts);
+    print_distribution_analysis("llm", &diagnostics.tag_counts);
+    print_distribution_analysis("session", &diagnostics.tag_counts);
 
     diagnostics
+}
+
+fn print_distribution_analysis(kind: &str, tag_counts: &BTreeMap<String, usize>) {
+    let prefix = format!("{}:", kind);
+    let tags: Vec<_> = tag_counts
+        .iter()
+        .filter(|(k, _)| k.starts_with(&prefix) && !k.ends_with(":unmatched"))
+        .collect();
+
+    if tags.is_empty() {
+        return;
+    }
+
+    let total: usize = tags.iter().map(|(_, v)| *v).sum();
+    let num_tags = tags.len();
+
+    // Sort by count descending
+    let mut sorted: Vec<_> = tags.iter().map(|(k, v)| (k.as_str(), **v)).collect();
+    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+
+    // Calculate distribution metrics
+    let top1_pct = sorted.first().map(|(_, v)| *v as f64 / total as f64 * 100.0).unwrap_or(0.0);
+    let top3_sum: usize = sorted.iter().take(3).map(|(_, v)| *v).sum();
+    let top3_pct = top3_sum as f64 / total as f64 * 100.0;
+    let top5_sum: usize = sorted.iter().take(5).map(|(_, v)| *v).sum();
+    let top5_pct = top5_sum as f64 / total as f64 * 100.0;
+
+    // Calculate entropy (higher = more evenly distributed)
+    let entropy: f64 = tags
+        .iter()
+        .map(|(_, v)| {
+            let p = **v as f64 / total as f64;
+            if p > 0.0 { -p * p.ln() } else { 0.0 }
+        })
+        .sum();
+    let max_entropy = (num_tags as f64).ln();
+    let normalized_entropy = if max_entropy > 0.0 { entropy / max_entropy } else { 0.0 };
+
+    // Print distribution summary
+    eprintln!(
+        "Distribution ({} tags, {} total): top1={:.1}%, top3={:.1}%, top5={:.1}%, entropy={:.2}",
+        num_tags, total, top1_pct, top3_pct, top5_pct, normalized_entropy
+    );
+
+    // Print top 5 tags
+    eprintln!("  Top tags:");
+    for (i, (tag, count)) in sorted.iter().take(5).enumerate() {
+        let pct = *count as f64 / total as f64 * 100.0;
+        eprintln!("    {}. {} = {} ({:.1}%)", i + 1, tag, count, pct);
+    }
+
+    // Warnings based on quality criteria
+    if top1_pct > 40.0 {
+        eprintln!(
+            "  Warning: {} dominates ({:.1}%). Target: top1 < 40%. Split into sub-categories.",
+            sorted[0].0, top1_pct
+        );
+    }
+    if top3_pct > 80.0 && num_tags > 3 {
+        eprintln!(
+            "  Warning: top 3 tags cover {:.1}%. Target: top3 < 70%. Add more specific rules.",
+            top3_pct
+        );
+    }
+    if num_tags < 5 {
+        eprintln!(
+            "  Warning: only {} tags. Target: 10-20 categories for meaningful aggregation.",
+            num_tags
+        );
+    } else if num_tags > 25 {
+        eprintln!(
+            "  Warning: {} tags is too fragmented. Target: 10-20 categories. Merge similar tags.",
+            num_tags
+        );
+    }
+    if normalized_entropy < 0.5 && num_tags > 3 {
+        eprintln!(
+            "  Warning: low entropy ({:.2}). Distribution is uneven. Target: entropy > 0.7.",
+            normalized_entropy
+        );
+    }
 }
 
 pub fn annotate_sessions(sessions: &mut [SessionRecord], tagger: &mut LlamaTagger) -> Result<()> {
