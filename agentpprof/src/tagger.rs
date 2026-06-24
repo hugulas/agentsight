@@ -1,11 +1,13 @@
 use anyhow::{Result, anyhow, bail};
 use chrono::Utc;
+use rayon::prelude::*;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use crate::session::{SessionRecord, short_hash, truncate_clean};
@@ -323,10 +325,19 @@ pub fn annotate_sessions_regex(
     sessions: &mut [SessionRecord],
     tagger: &RegexTagger,
 ) -> TagDiagnostics {
-    let mut diagnostics = TagDiagnostics::default();
+    // Use parallel processing for tagging
+    let total_sessions = AtomicUsize::new(0);
+    let matched_sessions = AtomicUsize::new(0);
+    let total_prompts = AtomicUsize::new(0);
+    let matched_prompts = AtomicUsize::new(0);
+    let total_llm_calls = AtomicUsize::new(0);
+    let matched_llm_calls = AtomicUsize::new(0);
 
-    for session in sessions {
-        diagnostics.total_sessions += 1;
+    // Process sessions in parallel
+    sessions.par_iter_mut().for_each(|session| {
+        total_sessions.fetch_add(1, Ordering::Relaxed);
+
+        // Tag session
         let prompt_text = session
             .user_requests
             .iter()
@@ -344,35 +355,73 @@ pub fn annotate_sessions_regex(
             &[session.source.clone(), session.model.clone()],
         ) {
             session.session_tag = tag;
-            diagnostics.matched_sessions += 1;
+            matched_sessions.fetch_add(1, Ordering::Relaxed);
         } else {
             session.session_tag = UNMATCHED_TAG.to_string();
-            diagnostics.unmatched_sessions += 1;
-            if diagnostics.unmatched_samples.len() < 30 {
-                diagnostics.unmatched_samples.push(UnmatchedSample {
-                    kind: "session".to_string(),
-                    preview: truncate_clean(&session_input, 120),
-                    session_id: session.session_id.clone(),
-                });
-            }
         }
 
+        // Tag prompts
         for req in &mut session.user_requests {
-            diagnostics.total_prompts += 1;
+            total_prompts.fetch_add(1, Ordering::Relaxed);
             if let Some(tag) = tagger.tag(
                 "prompt",
                 &req.preview,
                 &[session.session_tag.clone(), session.source.clone()],
             ) {
-                req.tag = tag.clone();
-                diagnostics.matched_prompts += 1;
-                *diagnostics
-                    .tag_counts
-                    .entry(format!("prompt:{}", tag))
-                    .or_default() += 1;
+                req.tag = tag;
+                matched_prompts.fetch_add(1, Ordering::Relaxed);
             } else {
                 req.tag = UNMATCHED_TAG.to_string();
-                diagnostics.unmatched_prompts += 1;
+            }
+        }
+
+        // Tag LLM calls
+        for call in &mut session.llm_calls {
+            total_llm_calls.fetch_add(1, Ordering::Relaxed);
+            if let Some(tag) = tagger.tag("llm", &call.preview, &[]) {
+                call.tag = tag;
+                matched_llm_calls.fetch_add(1, Ordering::Relaxed);
+            } else {
+                call.tag = UNMATCHED_TAG.to_string();
+            }
+        }
+    });
+
+    // Collect diagnostics (sequential pass for samples and tag counts)
+    let mut diagnostics = TagDiagnostics {
+        total_sessions: total_sessions.load(Ordering::Relaxed),
+        matched_sessions: matched_sessions.load(Ordering::Relaxed),
+        unmatched_sessions: 0,
+        total_prompts: total_prompts.load(Ordering::Relaxed),
+        matched_prompts: matched_prompts.load(Ordering::Relaxed),
+        unmatched_prompts: 0,
+        total_llm_calls: total_llm_calls.load(Ordering::Relaxed),
+        matched_llm_calls: matched_llm_calls.load(Ordering::Relaxed),
+        unmatched_llm_calls: 0,
+        unmatched_samples: Vec::new(),
+        tag_counts: BTreeMap::new(),
+    };
+
+    diagnostics.unmatched_sessions = diagnostics.total_sessions - diagnostics.matched_sessions;
+    diagnostics.unmatched_prompts = diagnostics.total_prompts - diagnostics.matched_prompts;
+    diagnostics.unmatched_llm_calls = diagnostics.total_llm_calls - diagnostics.matched_llm_calls;
+
+    // Collect samples and tag counts (sequential)
+    for session in sessions.iter() {
+        if session.session_tag == UNMATCHED_TAG && diagnostics.unmatched_samples.len() < 30 {
+            let session_input = truncate_clean(
+                &format!("{} {}", session.cwd, session.title),
+                120,
+            );
+            diagnostics.unmatched_samples.push(UnmatchedSample {
+                kind: "session".to_string(),
+                preview: session_input,
+                session_id: session.session_id.clone(),
+            });
+        }
+
+        for req in &session.user_requests {
+            if req.tag == UNMATCHED_TAG {
                 *diagnostics
                     .tag_counts
                     .entry("prompt:unmatched".to_string())
@@ -384,24 +433,42 @@ pub fn annotate_sessions_regex(
                         session_id: session.session_id.clone(),
                     });
                 }
+            } else {
+                *diagnostics
+                    .tag_counts
+                    .entry(format!("prompt:{}", req.tag))
+                    .or_default() += 1;
             }
         }
 
-        for idx in 0..session.llm_calls.len() {
-            diagnostics.total_llm_calls += 1;
-            let call = &session.llm_calls[idx];
-            if let Some(tag) = tagger.tag("llm", &call.preview, &[]) {
-                session.llm_calls[idx].tag = tag.clone();
-                diagnostics.matched_llm_calls += 1;
+        for call in &session.llm_calls {
+            if call.tag != UNMATCHED_TAG {
                 *diagnostics
                     .tag_counts
-                    .entry(format!("llm:{}", tag))
+                    .entry(format!("llm:{}", call.tag))
                     .or_default() += 1;
-            } else {
-                session.llm_calls[idx].tag = UNMATCHED_TAG.to_string();
-                diagnostics.unmatched_llm_calls += 1;
             }
         }
+    }
+
+    // Print warnings for unmatched items
+    if diagnostics.unmatched_sessions > 0 {
+        eprintln!(
+            "Warning: {}/{} sessions unmatched. Add session tag rules.",
+            diagnostics.unmatched_sessions, diagnostics.total_sessions
+        );
+    }
+    if diagnostics.unmatched_prompts > 0 {
+        eprintln!(
+            "Warning: {}/{} prompts unmatched. Add prompt tag rules.",
+            diagnostics.unmatched_prompts, diagnostics.total_prompts
+        );
+    }
+    if diagnostics.unmatched_llm_calls > 0 {
+        eprintln!(
+            "Warning: {}/{} LLM calls unmatched. Add llm tag rules.",
+            diagnostics.unmatched_llm_calls, diagnostics.total_llm_calls
+        );
     }
 
     diagnostics

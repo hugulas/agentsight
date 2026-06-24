@@ -84,7 +84,7 @@ avoid it for public artifacts unless the source sessions are already sanitized.
 Path frames outside the selected project root are grouped into stable
 `external/*` buckets so home-directory names are not emitted in public
 profiles.
-See `../docs/flamegraph/` for a flamegraph gallery and view-by-view usage
+See `../docs/flamegraph-example/` for a flamegraph gallery and view-by-view usage
 examples.
 
 ## Tags

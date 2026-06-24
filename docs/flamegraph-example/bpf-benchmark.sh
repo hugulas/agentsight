@@ -34,8 +34,8 @@ TAG_RULES=(
   --tag-rule 'prompt:discuss=(?i)觉得|是不是|会不会|有没有|还是|呢$|想想|效果|什么'
   --tag-rule 'prompt:continue=(?i)^继续$|讲解|分析一下'
   --tag-rule 'prompt:chat=(?i)不不不|你先|bpf ext'
-  --tag-rule 'prompt:brainstorm=(?i)你觉得|你想想|你说一下|你分析|可能有|能不能|怎么写|是不是'
-  --tag-rule 'prompt:workshop=(?i)workshop|benchmark|contrib|claim|定位|framework'
+  --tag-rule 'prompt:brainstorm=(?i)你觉得|你想想|你说一下|你分析|可能有|能不能|怎么写|是不是|我在想|我们的|一般|optimization|space|layer|变换'
+  --tag-rule 'prompt:repo=(?i)submodule|github\.com|仓库|repo|Files mentioned|结论'
 
   # LLM response rules (match model output patterns)
   --tag-rule 'llm:redacted=(?i)codex token report'

@@ -61,7 +61,28 @@ Rule syntax: `KIND:TAG=REGEX`
 
 ### 4. Check Coverage
 
-Each run shows `coverage_pct`. Iterate until coverage is acceptable (ideally >80%).
+Each run shows diagnostics and warnings:
+```
+Warning: 150/1000 prompts unmatched. Add prompt tag rules.
+```
+
+Check detailed coverage:
+```bash
+agentpprof --project-root . -o out.json --format json 2>&1 | jq '.tagging'
+```
+
+**Definition of "well-tagged":**
+- **Visual check**: `prompt:unmatched` bar width < 5% of total in SVG
+- **Numeric check**: `prompts.matched / prompts.total > 90%`
+- **Sessions**: >80% matched (context grouping)
+- **LLM calls**: Optional — many are placeholder text ("claude response", "token report")
+
+**Spot-check unmatched samples:**
+```bash
+jq '.tagging.unmatched_samples | map(select(.kind == "prompt")) | .[0:5]' out.json
+```
+
+If unmatched prompts share patterns, add rules. If they're truly miscellaneous, a small unmatched bar is acceptable.
 
 ### 5. Generate Final Flamegraphs
 
@@ -128,13 +149,24 @@ agentpprof \
   -o output.svg
 ```
 
+## What Can You Learn?
+
+**From tokens view:** Which activities consumed the most LLM budget, cache effectiveness, unexpectedly expensive sessions.
+
+**From time view:** Wall-clock time distribution, longest prompts, workflow bottlenecks.
+
+**From files view:** Codebase access patterns, security audit for unexpected file access.
+
+**From network view:** External service contacts, process chains, security audit for domain access.
+
 ## Notes
 
 - `--preset` enables built-in keyword rules for quick testing, but they are generic and unlikely to match your project well
 - Without `--tag-rule` or `--preset`, all prompts are marked `unmatched`
 - Flamegraphs require semantic tags to aggregate meaningfully
+- Warnings are printed for any unmatched items — address them by adding rules
 - Iterate on rules until coverage is acceptable, then save the command as a script
 
 ## Example Script
 
-See `docs/flamegraph/examples/bpf-benchmark.sh` for a complete example with 100% coverage.
+See `docs/flamegraph-example/bpf-benchmark.sh` for a complete example.
