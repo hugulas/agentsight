@@ -16,7 +16,7 @@ checksum = "aae1277d39aeec15cb388266ecc24b11c80469deae6067e17a1a7aa9e5c1f234"
 
 [[package]]
 name = "agent-session"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "chrono",
  "dirs",
@@ -28,7 +28,7 @@ dependencies = [
 
 [[package]]
 name = "agentsight"
-version = "0.2.34"
+version = "0.2.35"
 dependencies = [
  "agent-session",
  "async-stream",
@@ -1175,9 +1175,9 @@ dependencies = [
 
 [[package]]
 name = "libredox"
-version = "0.1.17"
+version = "0.1.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f02ab6bace2054fb888a3c16f990117b579d14a3088e472d63c6011fa185c9d3"
+checksum = "c943259e342f1e06ff2da7a83eabdfe7f92ce10262688dbf1895ff0b3e6e4652"
 dependencies = [
  "libc",
 ]
